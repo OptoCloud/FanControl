@@ -71,7 +71,8 @@ On the host:
 ```bash
 chmod +x /opt/fancontrol/FanControl.Daemon
 systemctl daemon-reload
-modprobe nct6775 drivetemp   # load now, without a reboot
+modprobe -a nct6775 drivetemp   # -a is required: `modprobe a b` without it loads
+                                 # only `a`, treating `b` as a module parameter
 systemctl enable --now fancontrol.service
 ```
 
