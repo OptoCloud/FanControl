@@ -58,9 +58,18 @@ dotnet publish src/FanControl.Daemon -c Release -r linux-x64 \
   --self-contained true -p:PublishSingleFile=true -o publish/
 ```
 
-Copy it over and install:
+**Stop the service before copying anything over, every time — including the first
+install.** Linux memory-maps the running executable from disk; overwriting
+`/opt/fancontrol/FanControl.Daemon` in place while the old process is still executing
+out of that file corrupts its mapping and gets it killed with SIGBUS the next time it
+faults in a code page. Harmless if the daemon isn't holding any fan channel in manual
+mode at that moment (systemd's `Restart=on-failure` just relaunches it), but SIGBUS
+bypasses `FanSafetyGuard`'s graceful-shutdown release path entirely — don't rely on
+getting lucky once `Channels` is non-empty.
 
 ```bash
+ssh root@proxmox-host systemctl stop fancontrol.service
+
 scp -r publish/* root@proxmox-host:/opt/fancontrol/
 scp deploy/modules-load.d/fancontrol.conf root@proxmox-host:/etc/modules-load.d/
 scp deploy/fancontrol.service root@proxmox-host:/etc/systemd/system/
