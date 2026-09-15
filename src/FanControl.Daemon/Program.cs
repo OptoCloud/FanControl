@@ -26,7 +26,9 @@ builder.Services.AddSingleton<HwmonSensorResolver>();
 builder.Services.AddSingleton<HwmonSensorReader>();
 builder.Services.AddSingleton<ISysfsFanController, SysfsFanController>();
 builder.Services.AddSingleton<INvidiaGpuTemperatureProvider, NvidiaSmiGpuTemperatureProvider>();
-builder.Services.AddSingleton<IHbaTemperatureProvider, UnavailableHbaTemperatureProvider>();
+builder.Services.AddSingleton<IHbaTemperatureProvider>(_ => fanControlOptions.Hba.Enabled
+    ? new Mpt3ctlHbaTemperatureProvider(fanControlOptions.Hba.DevicePath, fanControlOptions.Hba.IocNumber)
+    : new UnavailableHbaTemperatureProvider());
 builder.Services.AddSingleton<StatusSnapshotStore>();
 builder.Services.AddHostedService<ControlLoopService>();
 

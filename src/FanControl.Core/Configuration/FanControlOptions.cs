@@ -16,6 +16,18 @@ public sealed class FanControlOptions
     public TimeSpan DeadmanTimeout { get; init; } = TimeSpan.FromSeconds(30);
 
     public StatusApiOptions StatusApi { get; init; } = new();
+    public HbaOptions Hba { get; init; } = new();
+}
+
+public sealed class HbaOptions
+{
+    /// <summary>Set false to skip the mpt3ctl ioctl entirely and always report the hba sensor unavailable.</summary>
+    public bool Enabled { get; init; } = true;
+
+    public string DevicePath { get; init; } = "/dev/mpt3ctl";
+
+    /// <summary>Which IOC this is, per mpt3sas' enumeration order. 0 is correct for a single HBA.</summary>
+    public uint IocNumber { get; init; }
 }
 
 public sealed class StatusApiOptions
