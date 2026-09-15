@@ -1,4 +1,5 @@
 using FanControl.Core.Configuration;
+using FanControl.Core.Drives;
 using FanControl.Core.Fans;
 using FanControl.Core.IO;
 using FanControl.Core.Sensors;
@@ -32,8 +33,11 @@ builder.Services.AddSingleton<IHbaTemperatureProvider>(services => fanControlOpt
         fanControlOptions.Hba.IocNumber,
         services.GetRequiredService<ILogger<Mpt3ctlHbaTemperatureProvider>>())
     : new UnavailableHbaTemperatureProvider());
+builder.Services.AddSingleton<IDriveHealthProvider>(_ => new SmartctlDriveHealthProvider(fanControlOptions.DriveHealth.SmartctlPath));
 builder.Services.AddSingleton<StatusSnapshotStore>();
+builder.Services.AddSingleton<DriveHealthStore>();
 builder.Services.AddHostedService<ControlLoopService>();
+builder.Services.AddHostedService<DriveHealthService>();
 
 var app = builder.Build();
 

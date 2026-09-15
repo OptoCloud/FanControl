@@ -21,6 +21,7 @@ public sealed class ControlLoopService(
     INvidiaGpuTemperatureProvider gpuProvider,
     IHbaTemperatureProvider hbaProvider,
     StatusSnapshotStore statusStore,
+    DriveHealthStore driveHealthStore,
     ILogger<ControlLoopService> logger) : BackgroundService
 {
     private readonly FanControlOptions _options = options.Value;
@@ -102,7 +103,7 @@ public sealed class ControlLoopService(
 
         var fanStatuses = channels.Select(fanController.ReadStatus).ToList();
         LogUnexpectedModes(fanStatuses);
-        statusStore.Update(new StatusSnapshot(DateTimeOffset.UtcNow, readings, fanStatuses, ControlLoopHealthy: true));
+        statusStore.Update(new StatusSnapshot(DateTimeOffset.UtcNow, readings, fanStatuses, driveHealthStore.Latest, ControlLoopHealthy: true));
     }
 
     private void LogUnexpectedModes(IReadOnlyList<FanStatus> fanStatuses)

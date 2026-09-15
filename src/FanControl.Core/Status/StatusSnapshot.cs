@@ -1,3 +1,4 @@
+using FanControl.Core.Drives;
 using FanControl.Core.Fans;
 using FanControl.Core.Sensors;
 
@@ -12,4 +13,5 @@ public sealed record StatusSnapshot(
     DateTimeOffset TimestampUtc,
     IReadOnlyList<SensorReading> Sensors,
     IReadOnlyList<FanStatus> Fans,
+    IReadOnlyList<DriveHealthStatus> DriveHealth,
     bool ControlLoopHealthy);

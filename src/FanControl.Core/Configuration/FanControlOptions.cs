@@ -17,6 +17,21 @@ public sealed class FanControlOptions
 
     public StatusApiOptions StatusApi { get; init; } = new();
     public HbaOptions Hba { get; init; } = new();
+    public DriveHealthOptions DriveHealth { get; init; } = new();
+}
+
+public sealed class DriveHealthOptions
+{
+    public bool Enabled { get; init; } = true;
+
+    public string SmartctlPath { get; init; } = "smartctl";
+
+    /// <summary>
+    /// Deliberately independent of and much slower than PollInterval: SMART health rarely
+    /// changes poll-to-poll, and running smartctl against every drive every 2s would be
+    /// wasteful for no benefit.
+    /// </summary>
+    public TimeSpan PollInterval { get; init; } = TimeSpan.FromMinutes(15);
 }
 
 public sealed class HbaOptions
