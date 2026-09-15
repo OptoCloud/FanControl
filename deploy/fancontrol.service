@@ -1,0 +1,32 @@
+[Unit]
+Description=fancontrol - sensor-aware fan control daemon
+After=network.target sysinit.target
+Wants=sysinit.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/opt/fancontrol/FanControl.Daemon
+WorkingDirectory=/opt/fancontrol
+Environment=DOTNET_ENVIRONMENT=Production
+
+# Sysfs PWM attributes under /sys/class/hwmon are root:root, mode 644 by
+# default on this board's driver (nct6775) — root is required to write them.
+User=root
+
+# Give the graceful-shutdown path (FanSafetyGuard releasing every channel
+# back to BIOS Smart Fan IV) real time to run before systemd escalates to
+# SIGKILL, which bypasses it entirely.
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+ProtectHome=true
+# Deliberately NOT setting ProtectSystem=strict/ProtectKernelTunables: both
+# would block writes under /sys, which is the entire point of this service.
+
+[Install]
+WantedBy=multi-user.target

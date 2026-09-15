@@ -48,6 +48,50 @@ board's PWM headers directly.
   control loop and serves `/status`.
 - `tests/FanControl.Core.Tests` — xUnit tests against a fake in-memory sysfs.
 
+## Deployment
+
+Publish a self-contained single-file build on the dev machine (avoids needing
+the .NET runtime installed on the Proxmox host):
+
+```bash
+dotnet publish src/FanControl.Daemon -c Release -r linux-x64 \
+  --self-contained true -p:PublishSingleFile=true -o publish/
+```
+
+Copy it over and install:
+
+```bash
+scp -r publish/* root@proxmox-host:/opt/fancontrol/
+scp deploy/modules-load.d/fancontrol.conf root@proxmox-host:/etc/modules-load.d/
+scp deploy/fancontrol.service root@proxmox-host:/etc/systemd/system/
+```
+
+On the host:
+
+```bash
+chmod +x /opt/fancontrol/FanControl.Daemon
+systemctl daemon-reload
+modprobe nct6775 drivetemp   # load now, without a reboot
+systemctl enable --now fancontrol.service
+```
+
+Edit `/opt/fancontrol/appsettings.json` (or drop an
+`appsettings.Production.json` alongside it) to fill in `FanControl.Channels`
+and `FanControl.Curves` once the header mapping is verified — leave both
+empty to run monitor-only, which never writes to any `pwmN` file.
+
+Verify:
+
+```bash
+journalctl -u fancontrol -f
+curl -s http://127.0.0.1:5178/status | jq .
+```
+
+`fancontrol.service` runs as root (sysfs PWM attributes are root-owned,
+mode 644) and relies on `TimeoutStopSec=30` + `SIGTERM` so `FanSafetyGuard`
+gets a real chance to release every channel back to BIOS control on stop —
+never `systemctl kill -s SIGKILL` this service while `Channels` is non-empty.
+
 ## Status
 
 Early scaffold. Not yet resolved:

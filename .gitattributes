@@ -1,0 +1,3 @@
+# Linux config/unit files must stay LF even when checked out on Windows —
+# modprobe/systemd can choke on a trailing \r in a module name or directive.
+deploy/** text eol=lf
