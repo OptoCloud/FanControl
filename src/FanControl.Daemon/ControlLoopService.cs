@@ -88,6 +88,12 @@ public sealed class ControlLoopService(
                 continue;
             }
 
+            // Re-assert manual mode every poll, not just once at startup: observed on real
+            // hardware that some Super I/O channels silently revert pwmN_enable back to 0
+            // (chip-level fail-safe, not something the Linux driver documents) if it isn't
+            // periodically refreshed — writing the duty value alone wasn't enough.
+            fanController.TakeManualControl(channel);
+
             var dutyPercent = Math.Max(_curveEngine.Evaluate(curve, readings), channel.MinimumDutyPercent);
             fanController.SetDutyPercent(channel, dutyPercent);
         }
@@ -95,7 +101,18 @@ public sealed class ControlLoopService(
         guard.Kick(_options.DeadmanTimeout);
 
         var fanStatuses = channels.Select(fanController.ReadStatus).ToList();
+        LogUnexpectedModes(fanStatuses);
         statusStore.Update(new StatusSnapshot(DateTimeOffset.UtcNow, readings, fanStatuses, ControlLoopHealthy: true));
+    }
+
+    private void LogUnexpectedModes(IReadOnlyList<FanStatus> fanStatuses)
+    {
+        foreach (var status in fanStatuses.Where(s => s.Mode != PwmEnableMode.Manual))
+        {
+            logger.LogWarning(
+                "Fan channel '{FanChannelId}' read back pwm_enable={Mode} right after being re-asserted to Manual — a Super I/O watchdog or hardware quirk may be reverting it.",
+                status.Id, status.Mode);
+        }
     }
 
     private void LogUnresolvedSensors(IReadOnlyList<ResolvedSensor> resolved)
