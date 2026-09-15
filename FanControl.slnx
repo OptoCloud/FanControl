@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/FanControl.Core/FanControl.Core.csproj" />
+    <Project Path="src/FanControl.Daemon/FanControl.Daemon.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/FanControl.Core.Tests/FanControl.Core.Tests.csproj" />
+  </Folder>
+</Solution>
