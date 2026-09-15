@@ -43,13 +43,24 @@ public class CurveEngineTests
     }
 
     [Fact]
-    public void FailsSafeToFullDutyWhenNoDrivingSensorIsAvailable()
+    public void FailsSafeToFullDutyByDefaultWhenNoDrivingSensorIsAvailable()
     {
         var engine = new CurveEngine();
 
         var duty = engine.Evaluate(Curve, [new SensorReading("cpu", SensorCategory.Cpu, "Tctl", null, "path")]);
 
         Assert.Equal(100, duty);
+    }
+
+    [Fact]
+    public void FailsSafeToCurveSpecificDutyWhenConfigured()
+    {
+        var curve = Curve with { FailSafeDutyPercent = 80 };
+        var engine = new CurveEngine();
+
+        var duty = engine.Evaluate(curve, [new SensorReading("cpu", SensorCategory.Cpu, "Tctl", null, "path")]);
+
+        Assert.Equal(80, duty);
     }
 
     [Fact]

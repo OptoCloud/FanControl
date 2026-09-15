@@ -12,4 +12,5 @@ public sealed class FanCurveOptions
     public required IReadOnlyList<string> SensorIds { get; init; }
     public required IReadOnlyList<CurvePointOptions> Points { get; init; }
     public double HysteresisCelsius { get; init; } = 3.0;
+    public int FailSafeDutyPercent { get; init; } = 100;
 }

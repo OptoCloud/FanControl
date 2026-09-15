@@ -15,8 +15,16 @@ namespace FanControl.Core.Curves;
 /// fallen at least this many degrees below the point that produced the current duty —
 /// prevents the classic hunting/oscillation at a curve breakpoint.
 /// </param>
+/// <param name="FailSafeDutyPercent">
+/// Applied instead of the curve when every sensor in <see cref="SensorIds"/> is
+/// unavailable (e.g. the HBA temperature isn't wired up yet). Deliberately per-curve
+/// rather than a single global fail-safe: a curve fed by an always-missing sensor would
+/// otherwise sit at whatever this value is forever, so how "safe" that number should be
+/// depends on what the fan is actually protecting.
+/// </param>
 public sealed record FanCurve(
     string FanChannelId,
     IReadOnlyList<string> SensorIds,
     IReadOnlyList<CurvePoint> Points,
-    double HysteresisCelsius = 3.0);
+    double HysteresisCelsius = 3.0,
+    int FailSafeDutyPercent = 100);

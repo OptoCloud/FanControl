@@ -13,16 +13,16 @@ public sealed class CurveEngine
     private readonly Dictionary<string, int> _lastAppliedDuty = [];
 
     /// <summary>
-    /// Duty percent to apply for this poll. Returns 100 (fail safe) if none of the
-    /// curve's sensors produced a reading — an unreadable input must never be silently
-    /// treated as "cold".
+    /// Duty percent to apply for this poll. Returns curve.FailSafeDutyPercent if none of
+    /// the curve's sensors produced a reading — an unreadable input must never be
+    /// silently treated as "cold".
     /// </summary>
     public int Evaluate(FanCurve curve, IReadOnlyList<SensorReading> readings)
     {
         var drivingTemperature = SelectDrivingTemperature(curve, readings);
         if (drivingTemperature is not { } temperature)
         {
-            return 100;
+            return curve.FailSafeDutyPercent;
         }
 
         var target = Interpolate(curve.Points, temperature);

@@ -40,7 +40,8 @@ public sealed class ControlLoopService(
                 c.FanChannelId,
                 c.SensorIds,
                 c.Points.Select(p => new CurvePoint(p.TemperatureCelsius, p.DutyPercent)).ToList(),
-                c.HysteresisCelsius))
+                c.HysteresisCelsius,
+                c.FailSafeDutyPercent))
             .ToList();
 
         using var guard = new FanSafetyGuard(fanController, channels, _options.DeadmanTimeout);
