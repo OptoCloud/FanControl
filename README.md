@@ -38,6 +38,15 @@ board's PWM headers directly.
   `/status` JSON endpoint to `127.0.0.1` — it is never the thing exposed to
   the internet. A separate, existing public API/dashboard polls that
   endpoint locally, caches, and streams updates to browsers.
+- **HBA temperature is read via a raw ioctl.** `mpt3sas` has no hwmon
+  exposure for the LSI SAS9300-8i's IOC/board temperature; it's read
+  directly from Config Page IO_UNIT_PAGE_7 via `/dev/mpt3ctl` — the same
+  mechanism vendor tools like `lsiutil` use, reimplemented from the actual
+  kernel driver source rather than a third-party binary.
+- **Drive SMART health never wakes a sleeping drive.** Polled on its own
+  slow interval (default 15 min), fully decoupled from the 2s fan-control
+  loop, using `smartctl -n standby` so a drive already asleep is skipped
+  rather than spun up just to answer a health check.
 
 ## Project layout
 
@@ -49,6 +58,12 @@ board's PWM headers directly.
 - `tests/FanControl.Core.Tests` — xUnit tests against a fake in-memory sysfs.
 
 ## Deployment
+
+**Host prerequisite:** drive SMART health polling shells out to `smartctl`
+(package `smartmontools`), which is not installed by default on a minimal
+Proxmox/Debian host: `apt-get install -y smartmontools`. Without it,
+`FanControl.DriveHealth.Enabled` still works, it just reports every drive's
+health as unavailable — nothing crashes.
 
 Publish a self-contained single-file build on the dev machine (avoids needing
 the .NET runtime installed on the Proxmox host):
@@ -104,14 +119,20 @@ never `systemctl kill -s SIGKILL` this service while `Channels` is non-empty.
 
 ## Status
 
-Early scaffold. Not yet resolved:
+Live and running in production on the target host. Every sensor described
+above is real, all six fan headers are under verified curve-driven manual
+control, and drive SMART health is polled independently. Known accepted
+quirks:
 
-- The `LSI SAS9300-8i` has no hwmon temperature exposure in mainline
-  `mpt3sas` — reading it requires an ioctl to `/dev/mpt3ctl` (as
-  `lsiutil`/`storcli` do). Stubbed as unavailable for now.
-- The `pwmN` → physical fan header mapping has not yet been verified on this
-  board. `FanControl.Channels`/`FanControl.Curves` in config are empty until
-  it is.
+- One fan header (`lsi-cooling`, `pwm7`) has been observed silently
+  reverting `pwm7_enable` from Manual back to Disabled sometime after being
+  set — not documented by the Linux `nct6775` driver, likely a Super I/O
+  chip-level watchdog or board-specific quirk. Worked around by
+  re-asserting manual mode every poll rather than only once at startup;
+  root cause not otherwise identified.
+- `FanControl.Curves` breakpoints are tuned against real observed
+  temperatures where possible, but several (especially `lsi-cooling`) are
+  still based on limited data — revisit once more real-load history exists.
 
 ## License
 
