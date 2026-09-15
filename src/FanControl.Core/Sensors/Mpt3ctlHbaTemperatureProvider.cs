@@ -10,11 +10,12 @@ namespace FanControl.Core.Sensors;
 /// no hwmon exposure for this in mainline Linux; the only path is a Config Page
 /// IO_UNIT_PAGE_7 read, the same mechanism vendor tools like lsiutil use internally.
 ///
-/// This class is only the native-call plumbing (open/ioctl/close, unmanaged buffers);
-/// the actual wire-format logic lives in <see cref="Mpt3IoUnitPage7Protocol"/>, which is
-/// pure and unit-tested. This class itself has no test coverage — there is no
-/// /dev/mpt3ctl to exercise it against outside a machine with this HBA and driver loaded.
-/// Assumes a little-endian 64-bit host (true for every realistic deployment target here).
+/// This class is only the native-call plumbing (open/ioctl/close, unmanaged buffers) plus
+/// the two-step request orchestration; the wire-format byte layout lives in
+/// <see cref="Mpt3IoUnitPage7Protocol"/>, which is pure and unit-tested. This class itself
+/// has no test coverage — there is no /dev/mpt3ctl to exercise it against outside a
+/// machine with this HBA and driver loaded. Assumes a little-endian 64-bit host (true for
+/// every realistic deployment target here).
 /// </summary>
 public sealed class Mpt3ctlHbaTemperatureProvider(
     string devicePath = "/dev/mpt3ctl",
@@ -72,19 +73,79 @@ public sealed class Mpt3ctlHbaTemperatureProvider(
 
     private SensorReading ReadIoUnitPage7(int fd)
     {
+        // Step 1: PAGE_HEADER, no data transfer — firmware validates a READ_CURRENT's
+        // declared PageVersion/PageLength against the real page, so those must come from
+        // firmware itself rather than being guessed/zeroed (a zeroed header here fails
+        // READ_CURRENT with IOCStatus INVALID_SGL, confirmed on real hardware).
+        var headerRequestBlank = new Mpt3IoUnitPage7Protocol.PageHeader(
+            0, 0, Mpt3IoUnitPage7Protocol.IoUnitPageNumber7, Mpt3IoUnitPage7Protocol.ConfigPageTypeIoUnit);
+
+        if (!TrySendConfigRequest(fd, Mpt3IoUnitPage7Protocol.ConfigActionPageHeader, headerRequestBlank, dataInSize: 0,
+                out var headerReplyBytes, out _))
+        {
+            return Mpt3IoUnitPage7Protocol.Unavailable(); // TrySendConfigRequest already logged the reason
+        }
+
+        var realHeader = Mpt3IoUnitPage7Protocol.ReadReplyHeader(headerReplyBytes);
+        if (realHeader.PageLength == 0)
+        {
+            return Fail("Firmware returned PageLength=0 for IO Unit Page 7 on the PAGE_HEADER step — page not supported by this firmware.");
+        }
+
+        var pageBytes = realHeader.PageLength * 4;
+
+        // Step 2: READ_CURRENT, echoing the header firmware just gave us.
+        if (!TrySendConfigRequest(fd, Mpt3IoUnitPage7Protocol.ConfigActionPageReadCurrent, realHeader, pageBytes,
+                out _, out var pageData))
+        {
+            return Mpt3IoUnitPage7Protocol.Unavailable();
+        }
+
+        var reading = Mpt3IoUnitPage7Protocol.ParseTemperature(pageData!);
+        if (!reading.IsAvailable)
+        {
+            return Fail("IO Unit Page 7 read succeeded, but both IOCTemperature and BoardTemperature report \"not present\" — this card/firmware doesn't expose these sensors.");
+        }
+
+        LogOnce(LogLevel.Information, "HBA temperature available via {Label}: {Celsius}C", reading.Label, reading.CelsiusOrNull);
+        return reading;
+    }
+
+    /// <summary>
+    /// Sends one MPT3COMMAND config request and reads back the reply (+ data, when
+    /// dataInSize > 0). Returns false (having already logged why) on any failure: open
+    /// ioctl error, or a non-success IOCStatus.
+    /// </summary>
+    private bool TrySendConfigRequest(
+        int fd,
+        byte action,
+        Mpt3IoUnitPage7Protocol.PageHeader header,
+        int dataInSize,
+        out byte[] replyBytes,
+        out byte[]? dataBytes)
+    {
+        replyBytes = new byte[Mpt3IoUnitPage7Protocol.ReplySize];
+        dataBytes = null;
+
         var replyBuffer = Marshal.AllocHGlobal(Mpt3IoUnitPage7Protocol.ReplySize);
-        var dataBuffer = Marshal.AllocHGlobal(Mpt3IoUnitPage7Protocol.PageSize);
+        var dataBuffer = dataInSize > 0 ? Marshal.AllocHGlobal(dataInSize) : IntPtr.Zero;
         var ioctlBuffer = IntPtr.Zero;
 
         try
         {
             ZeroFill(replyBuffer, Mpt3IoUnitPage7Protocol.ReplySize);
-            ZeroFill(dataBuffer, Mpt3IoUnitPage7Protocol.PageSize);
+            if (dataBuffer != IntPtr.Zero)
+            {
+                ZeroFill(dataBuffer, dataInSize);
+            }
 
             var request = Mpt3IoUnitPage7Protocol.BuildIoctlBuffer(
                 iocNumber,
+                action,
+                header,
                 (ulong)replyBuffer.ToInt64(),
-                (ulong)dataBuffer.ToInt64());
+                (ulong)dataBuffer.ToInt64(),
+                dataInSize);
 
             ioctlBuffer = Marshal.AllocHGlobal(request.Length);
             Marshal.Copy(request, 0, ioctlBuffer, request.Length);
@@ -92,33 +153,34 @@ public sealed class Mpt3ctlHbaTemperatureProvider(
             if (NativeMethods.Ioctl(fd, Mpt3Command, ioctlBuffer) < 0)
             {
                 var errno = Marshal.GetLastPInvokeError();
-                return Fail($"MPT3COMMAND ioctl failed (errno {errno}) — wrong ioc_number ({iocNumber}), or the driver rejected the request.");
+                Fail($"MPT3COMMAND ioctl failed (errno {errno}, action 0x{action:X2}) — wrong ioc_number ({iocNumber}), or the driver rejected the request.");
+                return false;
             }
 
-            var replyBytes = new byte[Mpt3IoUnitPage7Protocol.ReplySize];
             Marshal.Copy(replyBuffer, replyBytes, 0, replyBytes.Length);
             if (!Mpt3IoUnitPage7Protocol.IsReplySuccess(replyBytes))
             {
-                var iocStatus = BitConverter.ToUInt16(replyBytes, 14);
-                return Fail($"Config Page read returned non-success IOCStatus 0x{iocStatus:X4}.");
+                var iocStatus = Mpt3IoUnitPage7Protocol.ReadIocStatus(replyBytes);
+                Fail($"Config Page request (action 0x{action:X2}) returned non-success IOCStatus 0x{iocStatus:X4}.");
+                return false;
             }
 
-            var pageBytes = new byte[Mpt3IoUnitPage7Protocol.PageSize];
-            Marshal.Copy(dataBuffer, pageBytes, 0, pageBytes.Length);
-            var reading = Mpt3IoUnitPage7Protocol.ParseTemperature(pageBytes);
-
-            if (!reading.IsAvailable)
+            if (dataInSize > 0)
             {
-                return Fail("IO Unit Page 7 read succeeded, but both IOCTemperature and BoardTemperature report \"not present\" — this card/firmware doesn't expose these sensors.");
+                dataBytes = new byte[dataInSize];
+                Marshal.Copy(dataBuffer, dataBytes, 0, dataInSize);
             }
 
-            LogOnce(LogLevel.Information, "HBA temperature available via {Label}: {Celsius}C", reading.Label, reading.CelsiusOrNull);
-            return reading;
+            return true;
         }
         finally
         {
             Marshal.FreeHGlobal(replyBuffer);
-            Marshal.FreeHGlobal(dataBuffer);
+            if (dataBuffer != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(dataBuffer);
+            }
+
             if (ioctlBuffer != IntPtr.Zero)
             {
                 Marshal.FreeHGlobal(ioctlBuffer);
