@@ -1,4 +1,6 @@
 using System.Runtime.InteropServices;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace FanControl.Core.Sensors;
 
@@ -14,9 +16,20 @@ namespace FanControl.Core.Sensors;
 /// /dev/mpt3ctl to exercise it against outside a machine with this HBA and driver loaded.
 /// Assumes a little-endian 64-bit host (true for every realistic deployment target here).
 /// </summary>
-public sealed class Mpt3ctlHbaTemperatureProvider(string devicePath = "/dev/mpt3ctl", uint iocNumber = 0)
+public sealed class Mpt3ctlHbaTemperatureProvider(
+    string devicePath = "/dev/mpt3ctl",
+    uint iocNumber = 0,
+    ILogger<Mpt3ctlHbaTemperatureProvider>? logger = null)
     : IHbaTemperatureProvider
 {
+    private readonly ILogger<Mpt3ctlHbaTemperatureProvider> _logger =
+        logger ?? NullLogger<Mpt3ctlHbaTemperatureProvider>.Instance;
+
+    // Logged only when the outcome changes, not every poll (every 2s) — diagnostic for
+    // "why is hba unavailable", not something worth spamming the journal with forever,
+    // but still surfaces a transition (e.g. it starts working after a driver reload).
+    private string? _lastLoggedMessage;
+
     private const int ORdwr = 2; // fcntl.h O_RDWR
 
     // mpt3sas_ctl.h: #define MPT3_MAGIC_NUMBER 'L'
@@ -43,7 +56,8 @@ public sealed class Mpt3ctlHbaTemperatureProvider(string devicePath = "/dev/mpt3
         var fd = NativeMethods.Open(devicePath, ORdwr);
         if (fd < 0)
         {
-            return Mpt3IoUnitPage7Protocol.Unavailable();
+            var errno = Marshal.GetLastPInvokeError();
+            return Fail($"open(\"{devicePath}\") failed (errno {errno}) — device missing, module not loaded, or not running as root.");
         }
 
         try
@@ -77,19 +91,29 @@ public sealed class Mpt3ctlHbaTemperatureProvider(string devicePath = "/dev/mpt3
 
             if (NativeMethods.Ioctl(fd, Mpt3Command, ioctlBuffer) < 0)
             {
-                return Mpt3IoUnitPage7Protocol.Unavailable();
+                var errno = Marshal.GetLastPInvokeError();
+                return Fail($"MPT3COMMAND ioctl failed (errno {errno}) — wrong ioc_number ({iocNumber}), or the driver rejected the request.");
             }
 
             var replyBytes = new byte[Mpt3IoUnitPage7Protocol.ReplySize];
             Marshal.Copy(replyBuffer, replyBytes, 0, replyBytes.Length);
             if (!Mpt3IoUnitPage7Protocol.IsReplySuccess(replyBytes))
             {
-                return Mpt3IoUnitPage7Protocol.Unavailable();
+                var iocStatus = BitConverter.ToUInt16(replyBytes, 14);
+                return Fail($"Config Page read returned non-success IOCStatus 0x{iocStatus:X4}.");
             }
 
             var pageBytes = new byte[Mpt3IoUnitPage7Protocol.PageSize];
             Marshal.Copy(dataBuffer, pageBytes, 0, pageBytes.Length);
-            return Mpt3IoUnitPage7Protocol.ParseTemperature(pageBytes);
+            var reading = Mpt3IoUnitPage7Protocol.ParseTemperature(pageBytes);
+
+            if (!reading.IsAvailable)
+            {
+                return Fail("IO Unit Page 7 read succeeded, but both IOCTemperature and BoardTemperature report \"not present\" — this card/firmware doesn't expose these sensors.");
+            }
+
+            LogOnce(LogLevel.Information, "HBA temperature available via {Label}: {Celsius}C", reading.Label, reading.CelsiusOrNull);
+            return reading;
         }
         finally
         {
@@ -100,6 +124,23 @@ public sealed class Mpt3ctlHbaTemperatureProvider(string devicePath = "/dev/mpt3
                 Marshal.FreeHGlobal(ioctlBuffer);
             }
         }
+    }
+
+    private SensorReading Fail(string reason)
+    {
+        LogOnce(LogLevel.Warning, "HBA temperature unavailable: {Reason}", reason);
+        return Mpt3IoUnitPage7Protocol.Unavailable();
+    }
+
+    private void LogOnce(LogLevel level, string message, params object?[] args)
+    {
+        if (_lastLoggedMessage == message)
+        {
+            return;
+        }
+
+        _lastLoggedMessage = message;
+        _logger.Log(level, message, args);
     }
 
     private static void ZeroFill(IntPtr buffer, int size) =>
