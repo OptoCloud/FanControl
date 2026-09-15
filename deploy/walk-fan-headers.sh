@@ -1,9 +1,12 @@
 #!/bin/bash
 # Walks every pwmN channel on the board's Super I/O chip (nct6798 on this board),
 # ramping each one in isolation and reading back the tach so the physical header
-# behind each pwmN can be identified by ear/eye. Restores pwmN_enable=5 (BIOS
-# Smart Fan IV) after every channel, including on interrupt. Ends by printing a
-# ready-to-paste FanControl.Channels block for appsettings.json.
+# behind each pwmN can be identified by ear/eye. Restores each channel's *exact*
+# original pwmN_enable mode and pwmN duty afterward (not a hardcoded "back to
+# auto") — a channel already sitting in manual mode before this script ran (as
+# pwm6 was observed to be, unwired, on this board) is put back exactly as found,
+# not switched into BIOS auto. Same restoration runs on Ctrl-C/kill via the trap.
+# Ends by printing a ready-to-paste FanControl.Channels block for appsettings.json.
 #
 # Run this ON THE HOST as root:  bash walk-fan-headers.sh
 set -euo pipefail
@@ -25,11 +28,17 @@ echo "Using chip directory: $CHIP_DIR"
 echo
 
 CURRENT_MANUAL_CHANNEL=""
+declare -A ORIG_ENABLE ORIG_PWM
 
 restore_current() {
     if [[ -n "$CURRENT_MANUAL_CHANNEL" ]]; then
-        echo 5 > "$CHIP_DIR/pwm${CURRENT_MANUAL_CHANNEL}_enable" 2>/dev/null || true
-        echo "  (restored pwm${CURRENT_MANUAL_CHANNEL} to auto)"
+        local n="$CURRENT_MANUAL_CHANNEL"
+        # Duty first, then mode: if the original mode was manual, this puts the
+        # exact original duty back before re-arming manual mode; if it was auto,
+        # the duty write is harmless since auto immediately recomputes it anyway.
+        echo "${ORIG_PWM[$n]}" > "$CHIP_DIR/pwm${n}" 2>/dev/null || true
+        echo "${ORIG_ENABLE[$n]}" > "$CHIP_DIR/pwm${n}_enable" 2>/dev/null || true
+        echo "  (restored pwm${n} to its original mode=${ORIG_ENABLE[$n]}, duty=${ORIG_PWM[$n]})"
         CURRENT_MANUAL_CHANNEL=""
     fi
 }
@@ -47,9 +56,11 @@ for n in 1 2 3 4 5 6 7; do
     fi
 
     baseline_rpm=$(cat "$tach")
+    ORIG_ENABLE[$n]=$(cat "$enable")
+    ORIG_PWM[$n]=$(cat "$pwm")
 
     echo
-    echo "--- pwm${n}: watch/listen to the case now ---"
+    echo "--- pwm${n}: watch/listen to the case now (original mode=${ORIG_ENABLE[$n]}, duty=${ORIG_PWM[$n]}) ---"
     read -r -p "Press Enter to ramp this channel to full speed... "
 
     echo 1 > "$enable"
@@ -58,14 +69,13 @@ for n in 1 2 3 4 5 6 7; do
     echo 255 > "$pwm"
     sleep 4
     ramped_rpm=$(cat "$tach")
-    read -r -p "At full speed now (tach=${ramped_rpm} rpm, baseline was ${baseline_rpm} rpm). Note which fan changed, then press Enter to drop to idle... "
+    read -r -p "At full speed now (tach=${ramped_rpm} rpm, baseline was ${baseline_rpm} rpm). Note which fan changed, then press Enter to restore... "
 
-    echo 60 > "$pwm"
-    sleep 4
-
-    echo 5 > "$enable"
+    # Exact restore, same as the trap: duty first, then mode.
+    echo "${ORIG_PWM[$n]}" > "$pwm"
+    echo "${ORIG_ENABLE[$n]}" > "$enable"
     CURRENT_MANUAL_CHANNEL=""
-    echo "pwm${n} restored to auto."
+    echo "pwm${n} restored to its original mode=${ORIG_ENABLE[$n]}, duty=${ORIG_PWM[$n]}."
 
     if [[ "$ramped_rpm" -gt $((baseline_rpm + 200)) || ( "$baseline_rpm" -eq 0 && "$ramped_rpm" -gt 200 ) ]]; then
         default_hint="responded"
