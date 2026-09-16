@@ -21,9 +21,9 @@ namespace FanControl.Core.Drives;
 /// </summary>
 public sealed class SmartctlDriveHealthProvider(string smartctlPath = "smartctl") : IDriveHealthProvider
 {
-    public async Task<DriveHealthStatus> ReadAsync(string deviceName, CancellationToken cancellationToken)
+    public async Task<DriveHealthStatus> ReadAsync(string liveDeviceName, string stableId, CancellationToken cancellationToken)
     {
-        var devicePath = $"/dev/{deviceName}";
+        var devicePath = $"/dev/{liveDeviceName}";
 
         try
         {
@@ -37,18 +37,18 @@ public sealed class SmartctlDriveHealthProvider(string smartctlPath = "smartctl"
 
             if (process is null)
             {
-                return SmartctlJsonParser.Unavailable(deviceName, devicePath);
+                return SmartctlJsonParser.Unavailable(stableId, devicePath);
             }
 
             var output = await process.StandardOutput.ReadToEndAsync(cancellationToken);
             await process.WaitForExitAsync(cancellationToken);
 
-            return SmartctlJsonParser.Parse(deviceName, output, devicePath);
+            return SmartctlJsonParser.Parse(stableId, output, devicePath);
         }
         catch (Exception ex) when (ex is Win32Exception or IOException)
         {
             // smartctl missing/not executable — report as absent, not fatal.
-            return SmartctlJsonParser.Unavailable(deviceName, devicePath);
+            return SmartctlJsonParser.Unavailable(stableId, devicePath);
         }
     }
 }

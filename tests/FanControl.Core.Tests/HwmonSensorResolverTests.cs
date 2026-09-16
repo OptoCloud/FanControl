@@ -23,23 +23,44 @@ public class HwmonSensorResolverTests
     }
 
     [Fact]
-    public void ResolvesOneSensorPerDrivetempInstanceNamedByBackingBlockDevice()
+    public void ResolvesDriveSensorsKeyedByWwidNotTheLiveSdxLetter()
     {
+        // wwid is burned into the drive and survives a port/slot change, unlike sdX.
         var sysFs = new FakeSysFs()
             .AddFile("/sys/class/hwmon/hwmon5/name", "drivetemp")
             .AddFile("/sys/class/hwmon/hwmon5/temp1_input", "31000")
             .AddDirectory("/sys/class/hwmon/hwmon5/device/block/sda")
+            .AddFile("/sys/class/block/sda/device/wwid", "naa.5000c500aaaa0001")
             .AddFile("/sys/class/hwmon/hwmon6/name", "drivetemp")
             .AddFile("/sys/class/hwmon/hwmon6/temp1_input", "33000")
-            .AddDirectory("/sys/class/hwmon/hwmon6/device/block/sdb");
+            .AddDirectory("/sys/class/hwmon/hwmon6/device/block/sdb")
+            .AddFile("/sys/class/block/sdb/device/wwid", "naa.5000c500bbbb0002");
 
         var resolver = new HwmonSensorResolver(sysFs);
 
         var resolved = resolver.Resolve([new SensorSpec("drive", SensorCategory.Drive, "drivetemp", AllInstancesOfChip: true)]);
 
         Assert.Equal(2, resolved.Count);
-        Assert.Contains(resolved, r => r.Id == "drive:sda");
-        Assert.Contains(resolved, r => r.Id == "drive:sdb");
+        Assert.Contains(resolved, r => r.Id == "drive:naa.5000c500aaaa0001" && r.DeviceName == "sda");
+        Assert.Contains(resolved, r => r.Id == "drive:naa.5000c500bbbb0002" && r.DeviceName == "sdb");
+    }
+
+    [Fact]
+    public void FallsBackToSdxLetterWhenWwidFileIsMissing()
+    {
+        var sysFs = new FakeSysFs()
+            .AddFile("/sys/class/hwmon/hwmon5/name", "drivetemp")
+            .AddFile("/sys/class/hwmon/hwmon5/temp1_input", "31000")
+            .AddDirectory("/sys/class/hwmon/hwmon5/device/block/sda");
+        // No wwid file added — some driver/controller combo might not expose one.
+
+        var resolver = new HwmonSensorResolver(sysFs);
+
+        var resolved = resolver.Resolve([new SensorSpec("drive", SensorCategory.Drive, "drivetemp", AllInstancesOfChip: true)]);
+
+        var sensor = Assert.Single(resolved);
+        Assert.Equal("drive:sda", sensor.Id);
+        Assert.Equal("sda", sensor.DeviceName);
     }
 
     [Fact]

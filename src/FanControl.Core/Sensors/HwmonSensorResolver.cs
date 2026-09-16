@@ -5,10 +5,16 @@ namespace FanControl.Core.Sensors;
 /// <summary>
 /// Resolves <see cref="SensorSpec"/> whitelist entries against the live hwmon tree.
 /// hwmonN numbering shifts across reboots and depends on module load order, so
-/// resolution always goes by chip "name" (and, for drives, the backing block device),
-/// never by a cached hwmonN path.
+/// resolution always goes by chip "name", never by a cached hwmonN path. For drives, the
+/// backing block device's sdX letter is itself unstable (shifts across reboots, and always
+/// changes if the drive is moved to a different port/slot), so drive identity is further
+/// resolved to the drive's WWN (wwid) — confirmed present at the same sysfs path
+/// (/sys/class/block/{dev}/device/wwid) for both native-SATA (libata) and HBA-attached
+/// (SAS/mpt3sas) drives on this hardware, unlike "serial" which doesn't exist there for
+/// either. wwid is burned into the drive itself, so it survives a port/slot change, which
+/// is exactly the property needed for it to be the sensor Id.
 /// </summary>
-public sealed class HwmonSensorResolver(ISysFs sysFs, string hwmonRoot = "/sys/class/hwmon")
+public sealed class HwmonSensorResolver(ISysFs sysFs, string hwmonRoot = "/sys/class/hwmon", string blockRoot = "/sys/class/block")
 {
     public IReadOnlyList<ResolvedSensor> Resolve(IEnumerable<SensorSpec> specs)
     {
@@ -57,9 +63,24 @@ public sealed class HwmonSensorResolver(ISysFs sysFs, string hwmonRoot = "/sys/c
             yield break;
         }
 
-        var deviceName = ResolveBackingDeviceName(chip) ?? SysFsPath.FileName(chip.Path);
-        yield return new ResolvedSensor($"{spec.Id}:{deviceName}", spec.Category, deviceName, inputPath);
+        var deviceName = ResolveBackingDeviceName(chip);
+        if (deviceName is not null)
+        {
+            // A real block device (a drive) — key it by WWN, not the live sdX name.
+            var stableId = ResolveDriveWwid(deviceName) ?? deviceName;
+            yield return new ResolvedSensor($"{spec.Id}:{stableId}", spec.Category, stableId, inputPath, deviceName);
+        }
+        else
+        {
+            // No backing block device (e.g. jc42 DIMM sensors) — nothing more stable
+            // available, fall back to the hwmon directory name as before.
+            var fallbackName = SysFsPath.FileName(chip.Path);
+            yield return new ResolvedSensor($"{spec.Id}:{fallbackName}", spec.Category, fallbackName, inputPath);
+        }
     }
+
+    private string? ResolveDriveWwid(string deviceName) =>
+        sysFs.TryReadAllText(SysFsPath.Combine(blockRoot, deviceName, "device", "wwid"));
 
     private ResolvedSensor? TryResolveByLabel(SensorSpec spec, HwmonChip chip)
     {

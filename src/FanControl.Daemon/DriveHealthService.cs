@@ -50,10 +50,16 @@ public sealed class DriveHealthService(
 
     private async Task PollOnceAsync(CancellationToken cancellationToken)
     {
-        var deviceNames = sensorResolver.Resolve([DriveSpec]).Select(s => s.Label).Distinct().ToList();
+        // Label is the stable id (WWN); DeviceName is the live sdX name needed to actually
+        // reach the drive right now. Both are required and mean different things — see
+        // ResolvedSensor's docs.
+        var drives = sensorResolver.Resolve([DriveSpec])
+            .Where(s => s.DeviceName is not null)
+            .DistinctBy(s => s.DeviceName)
+            .ToList();
 
         var statuses = await Task.WhenAll(
-            deviceNames.Select(name => healthProvider.ReadAsync(name, cancellationToken)));
+            drives.Select(d => healthProvider.ReadAsync(d.DeviceName!, d.Label, cancellationToken)));
 
         store.Update(statuses);
 
