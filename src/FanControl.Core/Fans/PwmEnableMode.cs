@@ -9,6 +9,9 @@ public enum PwmEnableMode
     ThermalCruise = 2,
     SpeedCruise = 3,
 
-    /// <summary>BIOS "Smart Fan IV" — the multi-slope curve mode the board ships in.</summary>
+    /// <summary>Smart Fan III. NCT6775F only, listed so a read-back of it isn't reported as unknown.</summary>
+    SmartFanIII = 4,
+
+    /// <summary>BIOS "Smart Fan IV": the multi-slope curve mode the board ships in.</summary>
     SmartFanIV = 5,
 }

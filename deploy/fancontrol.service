@@ -20,12 +20,21 @@ User=root
 TimeoutStopSec=30
 KillSignal=SIGTERM
 
+# Runs after the daemon is gone however it went (clean stop, crash, SIGKILL,
+# SIGBUS, OOM kill) and releases any header still stuck on manual PWM. The
+# only backstop for exits the in-process FanSafetyGuard never gets to see.
+# Via /bin/sh so it works even if the deploy didn't preserve the exec bit.
+ExecStopPost=/bin/sh /opt/fancontrol/release-fans.sh
+
 Restart=on-failure
 RestartSec=5
 
 NoNewPrivileges=true
 ProtectHome=true
-# Deliberately NOT setting ProtectSystem=strict/ProtectKernelTunables: both
+# "full", not "strict": makes /usr, /boot and /etc read-only but leaves /sys
+# (and /dev, for the mpt3ctl ioctl) alone.
+ProtectSystem=full
+# Deliberately NOT setting ProtectSystem=strict or ProtectKernelTunables: both
 # would block writes under /sys, which is the entire point of this service.
 
 [Install]

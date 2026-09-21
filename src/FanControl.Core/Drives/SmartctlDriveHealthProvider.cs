@@ -1,5 +1,4 @@
-using System.ComponentModel;
-using System.Diagnostics;
+using FanControl.Core.Processes;
 
 namespace FanControl.Core.Drives;
 
@@ -19,36 +18,25 @@ namespace FanControl.Core.Drives;
 /// as a success/failure signal here — whether we got usable data is determined entirely
 /// by whether the JSON contains "smart_status", not by the exit code.
 /// </summary>
-public sealed class SmartctlDriveHealthProvider(string smartctlPath = "smartctl") : IDriveHealthProvider
+public sealed class SmartctlDriveHealthProvider(string smartctlPath = "smartctl", TimeSpan? timeout = null) : IDriveHealthProvider
 {
+    // Generous: a healthy drive answers in well under a second, but one in error recovery
+    // can take tens of seconds and still come back with usable data.
+    private readonly TimeSpan _timeout = timeout ?? TimeSpan.FromSeconds(60);
+
     public async Task<DriveHealthStatus> ReadAsync(string liveDeviceName, string stableId, CancellationToken cancellationToken)
     {
         var devicePath = $"/dev/{liveDeviceName}";
 
-        try
-        {
-            using var process = Process.Start(new ProcessStartInfo
-            {
-                FileName = smartctlPath,
-                Arguments = $"-H -A -j -n standby {devicePath}",
-                RedirectStandardOutput = true,
-                UseShellExecute = false,
-            });
+        var result = await ProcessRunner.RunAsync(
+            smartctlPath,
+            ["-H", "-A", "-j", "-n", "standby", devicePath],
+            _timeout,
+            cancellationToken);
 
-            if (process is null)
-            {
-                return SmartctlJsonParser.Unavailable(stableId, devicePath);
-            }
-
-            var output = await process.StandardOutput.ReadToEndAsync(cancellationToken);
-            await process.WaitForExitAsync(cancellationToken);
-
-            return SmartctlJsonParser.Parse(stableId, output, devicePath);
-        }
-        catch (Exception ex) when (ex is Win32Exception or IOException)
-        {
-            // smartctl missing/not executable — report as absent, not fatal.
-            return SmartctlJsonParser.Unavailable(stableId, devicePath);
-        }
+        // Null: smartctl missing/not executable, or hung past the timeout. Absent, not fatal.
+        return result is null
+            ? SmartctlJsonParser.Unavailable(stableId, devicePath)
+            : SmartctlJsonParser.Parse(stableId, result.StandardOutput, devicePath);
     }
 }

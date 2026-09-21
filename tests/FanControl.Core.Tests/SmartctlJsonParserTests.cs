@@ -144,4 +144,29 @@ public class SmartctlJsonParserTests
         Assert.Equal("sdi", status.DeviceName);
         Assert.Equal("/dev/sdi", status.SourcePath);
     }
+
+    [Fact]
+    public void SkipsNumbersThatDoNotFitInsteadOfThrowing()
+    {
+        const string json = """
+            {
+              "smart_status": { "passed": true },
+              "ata_smart_attributes": {
+                "table": [
+                  { "id": 5.5, "raw": { "value": 1 } },
+                  { "id": 5, "raw": { "value": -1 } },
+                  { "id": 197, "raw": { "value": 1e40 } }
+                ]
+              },
+              "power_on_time": { "hours": 12.5 }
+            }
+            """;
+
+        var status = SmartctlJsonParser.Parse("sda", json, "/dev/sda");
+
+        Assert.True(status.Passed);
+        Assert.Null(status.ReallocatedSectorCount);
+        Assert.Null(status.PendingSectorCount);
+        Assert.Null(status.PowerOnHours);
+    }
 }

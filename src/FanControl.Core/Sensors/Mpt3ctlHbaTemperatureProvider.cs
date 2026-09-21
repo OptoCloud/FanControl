@@ -21,15 +21,24 @@ public sealed class Mpt3ctlHbaTemperatureProvider(
     string devicePath = "/dev/mpt3ctl",
     uint iocNumber = 0,
     ILogger<Mpt3ctlHbaTemperatureProvider>? logger = null)
-    : IHbaTemperatureProvider
+    : IHbaTemperatureProvider, IDisposable
 {
     private readonly ILogger<Mpt3ctlHbaTemperatureProvider> _logger =
         logger ?? NullLogger<Mpt3ctlHbaTemperatureProvider>.Instance;
 
-    // Logged only when the outcome changes, not every poll (every 2s) — diagnostic for
-    // "why is hba unavailable", not something worth spamming the journal with forever,
-    // but still surfaces a transition (e.g. it starts working after a driver reload).
-    private string? _lastLoggedMessage;
+    // Logged only when the outcome changes (keyed on the specific failure reason, or on
+    // which sensor succeeded), not every poll: diagnostic for "why is hba unavailable",
+    // not something worth spamming the journal with every 2s forever, but a transition
+    // (starts working after a driver reload, or fails for a *different* reason) still shows.
+    private string? _lastLoggedOutcome;
+
+    // The device stays open and the firmware's page header stays cached between polls, so
+    // the steady state is one ioctl per poll instead of open + two ioctls + close. Both
+    // are dropped on any failure, so the next poll starts again from scratch (covers a
+    // driver reload invalidating the fd, or new firmware changing the page version).
+    private readonly Lock _lock = new();
+    private int _fd = -1;
+    private Mpt3IoUnitPage7Protocol.PageHeader? _cachedHeader;
 
     private const int ORdwr = 2; // fcntl.h O_RDWR
 
@@ -52,49 +61,78 @@ public sealed class Mpt3ctlHbaTemperatureProvider(
         return await Task.Run(Read, cancellationToken);
     }
 
+    public void Dispose()
+    {
+        lock (_lock)
+        {
+            Reset();
+        }
+    }
+
     private SensorReading Read()
     {
-        var fd = NativeMethods.Open(devicePath, ORdwr);
-        if (fd < 0)
+        lock (_lock)
         {
-            var errno = Marshal.GetLastPInvokeError();
-            return Fail($"open(\"{devicePath}\") failed (errno {errno}) — device missing, module not loaded, or not running as root.");
+            if (_fd < 0)
+            {
+                _fd = NativeMethods.Open(devicePath, ORdwr);
+                if (_fd < 0)
+                {
+                    var errno = Marshal.GetLastPInvokeError();
+                    return Fail($"open(\"{devicePath}\") failed (errno {errno}): device missing, module not loaded, or not running as root.");
+                }
+            }
+
+            var reading = ReadIoUnitPage7(_fd);
+            if (!reading.IsAvailable)
+            {
+                Reset();
+            }
+
+            return reading;
+        }
+    }
+
+    private void Reset()
+    {
+        if (_fd >= 0)
+        {
+            NativeMethods.Close(_fd);
+            _fd = -1;
         }
 
-        try
-        {
-            return ReadIoUnitPage7(fd);
-        }
-        finally
-        {
-            NativeMethods.Close(fd);
-        }
+        _cachedHeader = null;
     }
 
     private SensorReading ReadIoUnitPage7(int fd)
     {
-        // Step 1: PAGE_HEADER, no data transfer — firmware validates a READ_CURRENT's
-        // declared PageVersion/PageLength against the real page, so those must come from
-        // firmware itself rather than being guessed/zeroed (a zeroed header here fails
-        // READ_CURRENT with IOCStatus INVALID_SGL, confirmed on real hardware).
-        var headerRequestBlank = new Mpt3IoUnitPage7Protocol.PageHeader(
-            0, 0, Mpt3IoUnitPage7Protocol.IoUnitPageNumber7, Mpt3IoUnitPage7Protocol.ConfigPageTypeIoUnit);
-
-        if (!TrySendConfigRequest(fd, Mpt3IoUnitPage7Protocol.ConfigActionPageHeader, headerRequestBlank, dataInSize: 0,
-                out var headerReplyBytes, out _))
+        if (_cachedHeader is not { } realHeader)
         {
-            return Mpt3IoUnitPage7Protocol.Unavailable(); // TrySendConfigRequest already logged the reason
-        }
+            // Step 1: PAGE_HEADER, no data transfer. Firmware validates a READ_CURRENT's
+            // declared PageVersion/PageLength against the real page, so those must come
+            // from firmware itself rather than being guessed/zeroed (a zeroed header here
+            // fails READ_CURRENT with IOCStatus INVALID_SGL, confirmed on real hardware).
+            var headerRequestBlank = new Mpt3IoUnitPage7Protocol.PageHeader(
+                0, 0, Mpt3IoUnitPage7Protocol.IoUnitPageNumber7, Mpt3IoUnitPage7Protocol.ConfigPageTypeIoUnit);
 
-        var realHeader = Mpt3IoUnitPage7Protocol.ReadReplyHeader(headerReplyBytes);
-        if (realHeader.PageLength == 0)
-        {
-            return Fail("Firmware returned PageLength=0 for IO Unit Page 7 on the PAGE_HEADER step — page not supported by this firmware.");
+            if (!TrySendConfigRequest(fd, Mpt3IoUnitPage7Protocol.ConfigActionPageHeader, headerRequestBlank, dataInSize: 0,
+                    out var headerReplyBytes, out _))
+            {
+                return Mpt3IoUnitPage7Protocol.Unavailable(); // TrySendConfigRequest already logged the reason
+            }
+
+            realHeader = Mpt3IoUnitPage7Protocol.ReadReplyHeader(headerReplyBytes);
+            if (realHeader.PageLength == 0)
+            {
+                return Fail("Firmware returned PageLength=0 for IO Unit Page 7 on the PAGE_HEADER step: page not supported by this firmware.");
+            }
+
+            _cachedHeader = realHeader;
         }
 
         var pageBytes = realHeader.PageLength * 4;
 
-        // Step 2: READ_CURRENT, echoing the header firmware just gave us.
+        // Step 2: READ_CURRENT, echoing the header firmware gave us.
         if (!TrySendConfigRequest(fd, Mpt3IoUnitPage7Protocol.ConfigActionPageReadCurrent, realHeader, pageBytes,
                 out _, out var pageData))
         {
@@ -104,10 +142,10 @@ public sealed class Mpt3ctlHbaTemperatureProvider(
         var reading = Mpt3IoUnitPage7Protocol.ParseTemperature(pageData!);
         if (!reading.IsAvailable)
         {
-            return Fail("IO Unit Page 7 read succeeded, but both IOCTemperature and BoardTemperature report \"not present\" — this card/firmware doesn't expose these sensors.");
+            return Fail("IO Unit Page 7 read succeeded, but both IOCTemperature and BoardTemperature report \"not present\": this card/firmware doesn't expose these sensors.");
         }
 
-        LogOnce(LogLevel.Information, "HBA temperature available via {Label}: {Celsius}C", reading.Label, reading.CelsiusOrNull);
+        LogOnce($"available:{reading.Label}", LogLevel.Information, "HBA temperature available via {Label}: {Celsius}C", reading.Label, reading.CelsiusOrNull);
         return reading;
     }
 
@@ -190,18 +228,18 @@ public sealed class Mpt3ctlHbaTemperatureProvider(
 
     private SensorReading Fail(string reason)
     {
-        LogOnce(LogLevel.Warning, "HBA temperature unavailable: {Reason}", reason);
+        LogOnce(reason, LogLevel.Warning, "HBA temperature unavailable: {Reason}", reason);
         return Mpt3IoUnitPage7Protocol.Unavailable();
     }
 
-    private void LogOnce(LogLevel level, string message, params object?[] args)
+    private void LogOnce(string outcome, LogLevel level, string message, params object?[] args)
     {
-        if (_lastLoggedMessage == message)
+        if (_lastLoggedOutcome == outcome)
         {
             return;
         }
 
-        _lastLoggedMessage = message;
+        _lastLoggedOutcome = outcome;
         _logger.Log(level, message, args);
     }
 

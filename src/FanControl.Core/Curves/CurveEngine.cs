@@ -13,18 +13,29 @@ public sealed class CurveEngine
     private readonly Dictionary<string, int> _lastAppliedDuty = [];
 
     /// <summary>
-    /// Duty percent to apply for this poll. Returns curve.FailSafeDutyPercent if none of
-    /// the curve's sensors produced a reading — an unreadable input must never be
-    /// silently treated as "cold".
+    /// Duty percent to apply for this poll. An unreadable input must never be silently
+    /// treated as "cold":
+    ///  - if none of the curve's sensors produced a reading, returns FailSafeDutyPercent;
+    ///  - if a sensor the curve names explicitly (not via a "prefix:*" wildcard) is
+    ///    unavailable while others still read, the curve still runs on what's left but
+    ///    FailSafeDutyPercent becomes a floor, since the missing sensor could be the hot one.
+    /// Wildcard members are exempt from the second rule: drives come and go (hot-swap,
+    /// standby) and the ones still present are a fair stand-in for the group.
     /// </summary>
     public int Evaluate(FanCurve curve, IReadOnlyList<SensorReading> readings)
     {
-        var drivingTemperature = SelectDrivingTemperature(curve, readings);
+        var (drivingTemperature, namedSensorUnavailable) = SelectDrivingTemperature(curve, readings);
         if (drivingTemperature is not { } temperature)
         {
             return curve.FailSafeDutyPercent;
         }
 
+        var duty = ApplyHysteresis(curve, temperature);
+        return namedSensorUnavailable ? Math.Max(duty, curve.FailSafeDutyPercent) : duty;
+    }
+
+    private int ApplyHysteresis(FanCurve curve, double temperature)
+    {
         var target = Interpolate(curve.Points, temperature);
 
         if (!_lastAppliedDuty.TryGetValue(curve.FanChannelId, out var previousDuty))
@@ -55,20 +66,22 @@ public sealed class CurveEngine
         _lastAppliedDuty[fanChannelId] = duty;
     }
 
-    private static double? SelectDrivingTemperature(FanCurve curve, IReadOnlyList<SensorReading> readings)
+    private static (double? DrivingTemperature, bool NamedSensorUnavailable) SelectDrivingTemperature(
+        FanCurve curve, IReadOnlyList<SensorReading> readings)
     {
-        var matchingIds = curve.SensorIds.Where(id => !id.EndsWith(":*", StringComparison.Ordinal)).ToHashSet();
+        var namedIds = curve.SensorIds.Where(id => !id.EndsWith(":*", StringComparison.Ordinal)).ToHashSet();
         var prefixes = curve.SensorIds
             .Where(id => id.EndsWith(":*", StringComparison.Ordinal))
             .Select(id => id[..^1])
             .ToList();
 
-        var values = readings
-            .Where(r => r.IsAvailable && (matchingIds.Contains(r.Id) || prefixes.Any(p => r.Id.StartsWith(p, StringComparison.Ordinal))))
-            .Select(r => r.CelsiusOrNull!.Value)
+        var available = readings
+            .Where(r => r.IsAvailable && (namedIds.Contains(r.Id) || prefixes.Any(p => r.Id.StartsWith(p, StringComparison.Ordinal))))
             .ToList();
 
-        return values.Count > 0 ? values.Max() : null;
+        var namedSensorUnavailable = namedIds.Any(id => !available.Any(r => r.Id == id));
+
+        return (available.Count > 0 ? available.Max(r => r.CelsiusOrNull!.Value) : null, namedSensorUnavailable);
     }
 
     private static int Interpolate(IReadOnlyList<CurvePoint> points, double temperature)

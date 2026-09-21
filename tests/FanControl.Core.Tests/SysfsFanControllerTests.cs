@@ -67,4 +67,46 @@ public class SysfsFanControllerTests
         Assert.Equal(20, status.DutyPercent);
         Assert.Equal(PwmEnableMode.Manual, status.Mode);
     }
+
+    [Theory]
+    [InlineData("2")]
+    [InlineData("3")]
+    [InlineData("5")]
+    public void ReleaseToAutoRestoresTheAutomaticModeTheChannelWasOriginallyIn(string originalMode)
+    {
+        var sysFs = new FakeSysFs().AddFile(Channel.EnablePath, originalMode);
+        var controller = new SysfsFanController(sysFs);
+
+        controller.TakeManualControl(Channel);
+        controller.TakeManualControl(Channel); // re-asserted every poll; must not overwrite the remembered original with "1"
+        controller.ReleaseToAuto(Channel);
+
+        Assert.Equal(originalMode, sysFs.ReadAllText(Channel.EnablePath));
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("1")] // left on manual by a previous instance that died without releasing
+    [InlineData("garbage")]
+    public void ReleaseToAutoNeverRestoresANonAutomaticOriginalMode(string originalMode)
+    {
+        var sysFs = new FakeSysFs().AddFile(Channel.EnablePath, originalMode);
+        var controller = new SysfsFanController(sysFs);
+
+        controller.TakeManualControl(Channel);
+        controller.ReleaseToAuto(Channel);
+
+        Assert.Equal("5", sysFs.ReadAllText(Channel.EnablePath));
+    }
+
+    [Fact]
+    public void ReadStatusReportsUnreadableModeAsNullRatherThanGuessing()
+    {
+        var sysFs = new FakeSysFs()
+            .AddFile(Channel.PwmPath, "128")
+            .AddFile(Channel.TachPath, "900");
+        var controller = new SysfsFanController(sysFs);
+
+        Assert.Null(controller.ReadStatus(Channel).Mode);
+    }
 }

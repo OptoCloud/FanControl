@@ -45,20 +45,24 @@ public static class SmartctlJsonParser
             {
                 foreach (var attribute in table.EnumerateArray())
                 {
-                    if (!attribute.TryGetProperty("id", out var idElement) || idElement.ValueKind != JsonValueKind.Number)
+                    // TryGet*, not Get*: those throw FormatException (not JsonException) on a
+                    // fractional or out-of-range number, which would escape the catch below.
+                    if (!attribute.TryGetProperty("id", out var idElement) ||
+                        idElement.ValueKind != JsonValueKind.Number ||
+                        !idElement.TryGetInt32(out var id))
                     {
                         continue;
                     }
 
                     if (!attribute.TryGetProperty("raw", out var raw) ||
                         !raw.TryGetProperty("value", out var rawValueElement) ||
-                        rawValueElement.ValueKind != JsonValueKind.Number)
+                        rawValueElement.ValueKind != JsonValueKind.Number ||
+                        !rawValueElement.TryGetUInt64(out var rawValue))
                     {
                         continue;
                     }
 
-                    var rawValue = (ulong)rawValueElement.GetInt64();
-                    switch (idElement.GetInt32())
+                    switch (id)
                     {
                         case AtaAttributeIdReallocatedSectorCount:
                             reallocatedSectorCount = rawValue;
@@ -73,9 +77,10 @@ public static class SmartctlJsonParser
             ulong? powerOnHours = null;
             if (root.TryGetProperty("power_on_time", out var powerOnTime) &&
                 powerOnTime.TryGetProperty("hours", out var hoursElement) &&
-                hoursElement.ValueKind == JsonValueKind.Number)
+                hoursElement.ValueKind == JsonValueKind.Number &&
+                hoursElement.TryGetUInt64(out var hours))
             {
-                powerOnHours = (ulong)hoursElement.GetInt64();
+                powerOnHours = hours;
             }
 
             return new DriveHealthStatus(deviceName, passed, reallocatedSectorCount, pendingSectorCount, powerOnHours, sourcePath);

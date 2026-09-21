@@ -9,5 +9,22 @@ public sealed class DriveHealthStore
 
     public IReadOnlyList<DriveHealthStatus> Latest => _latest;
 
-    public void Update(IReadOnlyList<DriveHealthStatus> statuses) => _latest = statuses;
+    /// <summary>
+    /// Replaces the stored results with this poll's. A drive that was unavailable this
+    /// poll (asleep, so smartctl -n standby skipped it, or smartctl timed out) keeps its
+    /// last good result, with that result's older AsOf, instead of being blanked out.
+    /// Drives absent from <paramref name="statuses"/> altogether are dropped.
+    /// </summary>
+    public void Update(IReadOnlyList<DriveHealthStatus> statuses, DateTimeOffset now)
+    {
+        var previous = _latest;
+
+        _latest = statuses
+            .Select(status => status.IsAvailable
+                ? status with { AsOf = now }
+                : previous.FirstOrDefault(p => p.DeviceName == status.DeviceName && p.IsAvailable) is { } lastGood
+                    ? lastGood with { SourcePath = status.SourcePath }
+                    : status)
+            .ToList();
+    }
 }

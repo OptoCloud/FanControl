@@ -6,8 +6,9 @@ namespace FanControl.Core.Sensors;
 /// or meaningless inputs (AUXTIN, floating CPUTIN, etc.) never make it into a reading.
 /// </summary>
 /// <param name="Id">
-/// Stable logical id. For <see cref="AllInstancesOfChip"/> specs this is a prefix —
-/// the resolved id becomes "{Id}:{deviceName}", e.g. "drive:sda".
+/// Stable logical id. For <see cref="AllInstancesOfChip"/> specs this is a prefix:
+/// the resolved id becomes "{Id}:{stableName}", where stableName is the drive's WWN for
+/// drives, or the hwmon directory name where nothing more stable exists (jc42 DIMMs).
 /// </param>
 /// <param name="ChipName">Exact match against the hwmon chip's "name" file, e.g. "k10temp", "nct6798", "drivetemp".</param>
 /// <param name="Label">

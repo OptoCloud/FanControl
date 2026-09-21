@@ -89,6 +89,55 @@ public class CurveEngineTests
         Assert.Equal(50, duty);
     }
 
+    [Fact]
+    public void FailSafeBecomesAFloorWhenOnlySomeNamedSensorsAreUnavailable()
+    {
+        var curve = Curve with { SensorIds = ["gpu", "hba"], FailSafeDutyPercent = 80 };
+        var engine = new CurveEngine();
+
+        var duty = engine.Evaluate(curve,
+        [
+            new SensorReading("gpu", SensorCategory.Gpu, "GPU", null, "path"),
+            Reading("hba", 40),
+        ]);
+
+        // hba alone says 35, but the unreadable gpu could be the hot one.
+        Assert.Equal(80, duty);
+    }
+
+    [Fact]
+    public void NamedSensorMissingFromReadingsEntirelyCountsAsUnavailable()
+    {
+        var curve = Curve with { SensorIds = ["gpu", "hba"], FailSafeDutyPercent = 80 };
+        var engine = new CurveEngine();
+
+        Assert.Equal(80, engine.Evaluate(curve, [Reading("hba", 40)]));
+    }
+
+    [Fact]
+    public void FailSafeFloorNeverLowersAHotterCurveResult()
+    {
+        var curve = Curve with { SensorIds = ["gpu", "hba"], FailSafeDutyPercent = 80 };
+        var engine = new CurveEngine();
+
+        Assert.Equal(100, engine.Evaluate(curve, [Reading("hba", 90)]));
+    }
+
+    [Fact]
+    public void UnavailableWildcardMemberDoesNotTriggerTheFailSafeFloor()
+    {
+        var curve = Curve with { SensorIds = ["drive:*"], FailSafeDutyPercent = 80 };
+        var engine = new CurveEngine();
+
+        var duty = engine.Evaluate(curve,
+        [
+            Reading("drive:a", 40),
+            new SensorReading("drive:b", SensorCategory.Drive, "b", null, "path"), // asleep
+        ]);
+
+        Assert.Equal(35, duty);
+    }
+
     private static SensorReading Reading(string id, double celsius) =>
         new(id, SensorCategory.Cpu, id, celsius, "path");
 }

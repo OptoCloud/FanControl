@@ -61,11 +61,16 @@ public sealed class DriveHealthService(
         var statuses = await Task.WhenAll(
             drives.Select(d => healthProvider.ReadAsync(d.DeviceName!, d.Label, cancellationToken)));
 
-        store.Update(statuses);
+        var previous = store.Latest;
+        store.Update(statuses, DateTimeOffset.UtcNow);
 
-        foreach (var status in statuses.Where(s => s.Passed == false))
+        foreach (var status in statuses)
         {
-            logger.LogWarning("Drive {DeviceName} FAILED its SMART overall-health self-assessment.", status.DeviceName);
+            var lastGood = previous.FirstOrDefault(p => p.DeviceName == status.DeviceName && p.IsAvailable);
+            foreach (var alert in DriveHealthAlerts.Evaluate(lastGood, status))
+            {
+                logger.LogWarning("Drive {DeviceName} ({SourcePath}) {Alert}.", status.DeviceName, status.SourcePath, alert);
+            }
         }
     }
 }

@@ -17,10 +17,10 @@ namespace FanControl.Core.Curves;
 /// </param>
 /// <param name="FailSafeDutyPercent">
 /// Applied instead of the curve when every sensor in <see cref="SensorIds"/> is
-/// unavailable (e.g. the HBA temperature isn't wired up yet). Deliberately per-curve
-/// rather than a single global fail-safe: a curve fed by an always-missing sensor would
-/// otherwise sit at whatever this value is forever, so how "safe" that number should be
-/// depends on what the fan is actually protecting.
+/// unavailable, and as a floor under the curve when only some explicitly named sensor is
+/// (see CurveEngine.Evaluate). Deliberately per-curve rather than a single global
+/// fail-safe: a curve naming an always-missing sensor sits at this value forever, so how
+/// "safe" that number should be depends on what the fan is actually protecting.
 /// </param>
 public sealed record FanCurve(
     string FanChannelId,

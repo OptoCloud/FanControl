@@ -11,6 +11,12 @@ namespace FanControl.Core.Drives;
 /// key history/graphs on, since it survives reboots and even a physical port/slot change.
 /// See <see cref="SourcePath"/> for the live /dev path this particular read actually used.
 /// </param>
+/// <param name="AsOf">
+/// When this data was actually read from the drive, stamped by DriveHealthStore. Health is
+/// polled on a slow cycle and a sleeping drive keeps its last good result rather than
+/// being woken, so this can be far older than the enclosing snapshot's timestamp. Null if
+/// the drive has never produced a reading.
+/// </param>
 /// <param name="SourcePath">The live /dev/sdX path smartctl was actually run against for this read — not stable, informational only.</param>
 public sealed record DriveHealthStatus(
     string DeviceName,
@@ -18,7 +24,8 @@ public sealed record DriveHealthStatus(
     ulong? ReallocatedSectorCount,
     ulong? PendingSectorCount,
     ulong? PowerOnHours,
-    string SourcePath)
+    string SourcePath,
+    DateTimeOffset? AsOf = null)
 {
     public bool IsAvailable => Passed.HasValue;
 }

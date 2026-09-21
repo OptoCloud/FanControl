@@ -21,19 +21,34 @@ board's PWM headers directly.
 
 - **Sensors are resolved by name, never by hwmon path.** `hwmonN` numbering
   shifts across reboots and module load order, so every sensor is found by
-  its chip name (`k10temp`, `nct6798`, `drivetemp`, `jc42`) at startup, and
-  drive sensors are further identified by their backing block device
-  (`drive:sda`, not `hwmon7`).
+  its chip name (`k10temp`, `nct6798`, `drivetemp`, `jc42`), and drive
+  sensors are keyed by the drive's WWN (`drive:<wwn>`), since even
+  the `sdX` letter isn't stable. The hwmon tree is re-scanned periodically
+  (`SensorRescanInterval`, default 30s), so a drive that resets or is
+  hot-swapped is picked back up without a restart.
 - **Only whitelisted sensors are read.** Unconnected/floating hwmon inputs
   (`AUXTIN0/1/2`, `CPUTIN` on this board) are never touched.
 - **Fan headers are addressed by verified mapping, not guesswork.** There is
   no documented `pwmN` → silkscreen header table for this board; the mapping
   in config must be established by walking each channel in manual mode and
   watching which tach responds.
-- **Manual PWM is never left dangling.** Taking a channel to manual mode is
-  paired with a safety guard that releases it back to BIOS Smart Fan IV on
-  clean shutdown *and* via an independent deadman timer if the control loop
-  ever stalls without crashing outright.
+- **Manual PWM is never left dangling.** Three layers: a safety guard
+  releases every channel back to the automatic mode it was found in (BIOS
+  Smart Fan IV here) on clean shutdown; an independent, re-arming deadman
+  timer does the same if the control loop ever stalls without crashing; and
+  `deploy/release-fans.sh`, run by systemd as `ExecStopPost`, covers the
+  exits nothing in-process can react to (SIGKILL, SIGBUS, OOM kill).
+- **An unreadable sensor is never treated as "cold".** If every sensor behind
+  a curve is unavailable the fan runs at the curve's `FailSafeDutyPercent`;
+  if only some explicitly named sensor is (say `gpu` on a `gpu`+`hba`
+  curve), the curve still runs but that fail-safe becomes its floor.
+- **Config is validated before any fan is touched.** Out-of-range duties,
+  unsorted curve points, a curve naming an unknown channel, or a channel
+  with no curve (or two) all refuse to start with every problem listed,
+  rather than surfacing as a poll that fails every 2 seconds.
+- **Fan stalls are detected.** A header reading 0 RPM for several
+  consecutive polls while being driven is logged and flagged as `stalled`
+  in `/status`.
 - **Status is exposed read-only, loopback-only.** The daemon binds its
   `/status` JSON endpoint to `127.0.0.1` — it is never the thing exposed to
   the internet. A separate, existing public API/dashboard polls that
@@ -46,7 +61,13 @@ board's PWM headers directly.
 - **Drive SMART health never wakes a sleeping drive.** Polled on its own
   slow interval (default 15 min), fully decoupled from the 2s fan-control
   loop, using `smartctl -n standby` so a drive already asleep is skipped
-  rather than spun up just to answer a health check.
+  rather than spun up just to answer a health check. A skipped drive keeps
+  its last good result (each entry carries an `asOf` timestamp saying how
+  old it is). Beyond the overall pass/fail flag, which tends to be the last
+  thing to change on a dying drive, new pending sectors and a growing
+  reallocated count are logged as warnings.
+- **External tools can't hang the daemon.** `nvidia-smi` and `smartctl` both
+  run under a hard timeout and are killed if they exceed it.
 
 ## Project layout
 
@@ -85,7 +106,7 @@ getting lucky once `Channels` is non-empty.
 ```bash
 ssh root@proxmox-host systemctl stop fancontrol.service
 
-scp -r publish/* root@proxmox-host:/opt/fancontrol/
+scp -r publish/* root@proxmox-host:/opt/fancontrol/   # includes release-fans.sh
 scp deploy/modules-load.d/fancontrol.conf root@proxmox-host:/etc/modules-load.d/
 scp deploy/fancontrol.service root@proxmox-host:/etc/systemd/system/
 ```
@@ -114,8 +135,22 @@ curl -s http://127.0.0.1:5178/status | jq .
 
 `fancontrol.service` runs as root (sysfs PWM attributes are root-owned,
 mode 644) and relies on `TimeoutStopSec=30` + `SIGTERM` so `FanSafetyGuard`
-gets a real chance to release every channel back to BIOS control on stop —
-never `systemctl kill -s SIGKILL` this service while `Channels` is non-empty.
+gets a real chance to release every channel itself on stop. If the daemon
+dies without that chance, `ExecStopPost` runs `release-fans.sh`, which hands
+any header still on manual back to Smart Fan IV; it can also be run by hand
+(`sh /opt/fancontrol/release-fans.sh`) whenever the daemon isn't running.
+
+One thing still defeats it: `systemctl kill -s SIGKILL fancontrol` signals the
+whole unit by default, which kills the `ExecStopPost` script along with the
+daemon and leaves every header on manual until the automatic restart takes them
+over again. Verified on real hardware; with `--kill-whom=main` (which is what a
+real crash, SIGBUS or OOM kill looks like) the script runs and releases
+everything within a second. Never SIGKILL the whole unit.
+
+In `/status`, `controlLoopHealthy` goes false when a poll fails, when any
+channel couldn't be driven, or when the newest snapshot is older than
+`DeadmanTimeout` (a hung loop), so a consumer doesn't need to judge
+staleness from `timestampUtc` itself.
 
 ## Status
 
