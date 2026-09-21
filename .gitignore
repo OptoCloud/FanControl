@@ -1,7 +1,6 @@
-bin/
-obj/
-*.user
-.vs/
-publish/
 .idea/
+.vs/
 *.zip
+
+# Rust build output
+daemon/target/

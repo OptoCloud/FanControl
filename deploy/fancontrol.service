@@ -1,29 +1,34 @@
 [Unit]
 Description=fancontrol - sensor-aware fan control daemon
-After=network.target sysinit.target
+After=sysinit.target systemd-tmpfiles-setup.service
 Wants=sysinit.target
 
 [Service]
 Type=notify
 NotifyAccess=main
-ExecStart=/opt/fancontrol/FanControl.Daemon
-WorkingDirectory=/opt/fancontrol
-Environment=DOTNET_ENVIRONMENT=Production
+ExecStart=/opt/fancontrol/fancontrol --config /etc/fancontrol/fancontrol.toml
 
 # Sysfs PWM attributes under /sys/class/hwmon are root:root, mode 644 by
-# default on this board's driver (nct6775) — root is required to write them.
+# default on this board's driver (nct6775): root is required to write them.
 User=root
 
-# Give the graceful-shutdown path (FanSafetyGuard releasing every channel
-# back to BIOS Smart Fan IV) real time to run before systemd escalates to
-# SIGKILL, which bypasses it entirely.
+# The control loop pings systemd after every poll. If it goes quiet for this
+# long the whole process is frozen (something the in-process deadman can't
+# catch, being a thread of that same process): systemd kills it, ExecStopPost
+# releases the fans, and Restart= brings it back. Must stay well above the
+# worst-case poll (nvidia-smi timeout + two 5s HBA ioctls).
+WatchdogSec=30
+
+# Give the graceful-shutdown path (every channel handed back to BIOS Smart
+# Fan IV) real time to run before systemd escalates to SIGKILL.
 TimeoutStopSec=30
 KillSignal=SIGTERM
 
-# Runs after the daemon is gone however it went (clean stop, crash, SIGKILL,
-# SIGBUS, OOM kill) and releases any header still stuck on manual PWM. The
-# only backstop for exits the in-process FanSafetyGuard never gets to see.
-# Via /bin/sh so it works even if the deploy didn't preserve the exec bit.
+# Runs after the daemon is gone however it went (clean stop, crash, watchdog
+# kill, SIGKILL, SIGBUS, OOM kill) and releases any header still stuck on
+# manual PWM. Via /bin/sh so it works even without the exec bit.
+# NOTE: `systemctl kill -s SIGKILL` without --kill-whom=main signals the
+# whole unit and kills this script too. Never SIGKILL the whole unit.
 ExecStopPost=/bin/sh /opt/fancontrol/release-fans.sh
 
 Restart=on-failure
@@ -31,11 +36,9 @@ RestartSec=5
 
 NoNewPrivileges=true
 ProtectHome=true
-# "full", not "strict": makes /usr, /boot and /etc read-only but leaves /sys
-# (and /dev, for the mpt3ctl ioctl) alone.
+# "full", not "strict": makes /usr, /boot and /etc read-only but leaves /sys,
+# /dev (the mpt3ctl ioctl) and /run (the API socket) alone.
 ProtectSystem=full
-# Deliberately NOT setting ProtectSystem=strict or ProtectKernelTunables: both
-# would block writes under /sys, which is the entire point of this service.
 
 [Install]
 WantedBy=multi-user.target

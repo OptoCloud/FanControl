@@ -1,0 +1,8 @@
+# The daemon is developed and unit-tested on Windows but only ever runs on Linux. The
+# musl target ships its own C runtime objects, so Rust's bundled LLD can link a fully
+# static Linux binary from Windows with no cross toolchain installed:
+#
+#   rustup target add x86_64-unknown-linux-musl
+#   cargo build --release --target x86_64-unknown-linux-musl
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"

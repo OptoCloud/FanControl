@@ -1,0 +1,22 @@
+[package]
+name = "fancontrol"
+version = "0.2.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+description = "Sensor-aware fan control daemon"
+publish = false
+
+[dependencies]
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+# Deliberately NOT "abort": a panic has to unwind through FanSafetyGuard's Drop so every
+# fan channel is handed back to automatic control on the way out.
+panic = "unwind"

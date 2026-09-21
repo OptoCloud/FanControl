@@ -1,0 +1,120 @@
+# fancontrol configuration for orion. Installed as /etc/fancontrol/fancontrol.toml.
+# Validate after editing, without touching any fan:
+#   /opt/fancontrol/fancontrol --config /etc/fancontrol/fancontrol.toml --check
+
+poll_interval_secs = 2
+# If the control loop doesn't complete a poll within this window, every channel is released
+# back to BIOS control. Must be at least twice poll_interval_secs.
+deadman_timeout_secs = 30
+# How often the hwmon tree is re-scanned, so a drive that resets or is hot-swapped is
+# picked back up without a restart.
+sensor_rescan_interval_secs = 30
+
+[api]
+# Unix socket only, never a network port. Try it from the host with:
+#   curl --unix-socket /run/fancontrol/fancontrol.sock http://localhost/status
+#   curl -N --unix-socket /run/fancontrol/fancontrol.sock http://localhost/events
+socket_path = "/run/fancontrol/fancontrol.sock"
+socket_mode = "0660"
+# For a consumer in an UNPRIVILEGED LXC: bind-mount the directory (not the socket file,
+# which is recreated on every start) into the container,
+#   pct set <vmid> -mp0 /run/fancontrol,mp=/run/fancontrol
+# and give the socket to the host uid/gid the container's root maps to (100000 unless the
+# container has a custom idmap):
+# socket_uid = 100000
+# socket_gid = 100000
+max_clients = 16
+
+[gpu]
+enabled = true
+min_read_interval_secs = 6
+timeout_secs = 5
+
+[hba]
+enabled = true
+device_path = "/dev/mpt3ctl"
+ioc_number = 0
+
+[drive_health]
+enabled = true
+poll_interval_secs = 900
+timeout_secs = 60
+
+# Header mapping verified on this board (ASRock B550 Pro4, NCT6798D) by walking each
+# channel in manual mode and watching which tach responds. pwm6 is unwired.
+
+[[channels]]
+id = "drive-cage"
+chip_name = "nct6798"
+index = 1
+minimum_duty_percent = 30
+
+[[channels]]
+id = "cpu-cooler-front"
+chip_name = "nct6798"
+index = 2
+minimum_duty_percent = 30
+
+[[channels]]
+id = "cpu-cooler-rear"
+chip_name = "nct6798"
+index = 3
+minimum_duty_percent = 30
+
+[[channels]]
+id = "intake-cpu"
+chip_name = "nct6798"
+index = 4
+minimum_duty_percent = 30
+
+[[channels]]
+id = "intake-gpu-lsi"
+chip_name = "nct6798"
+index = 5
+minimum_duty_percent = 30
+
+[[channels]]
+id = "lsi-cooling"
+chip_name = "nct6798"
+index = 7
+minimum_duty_percent = 30
+
+# points are [temperature_celsius, duty_percent], ascending. The hottest of sensor_ids
+# drives the fan; "drive:*" means every drive. fail_safe_duty_percent applies when every
+# sensor is unreadable, and is a floor when only some explicitly named one is.
+
+[[curves]]
+fan_channel_id = "cpu-cooler-front"
+sensor_ids = ["cpu"]
+points = [[30, 30], [45, 45], [60, 70], [75, 100]]
+fail_safe_duty_percent = 100
+
+[[curves]]
+fan_channel_id = "cpu-cooler-rear"
+sensor_ids = ["cpu"]
+points = [[30, 30], [45, 45], [60, 70], [75, 100]]
+fail_safe_duty_percent = 100
+
+[[curves]]
+fan_channel_id = "intake-cpu"
+sensor_ids = ["cpu"]
+points = [[30, 30], [45, 40], [60, 60], [75, 90]]
+fail_safe_duty_percent = 100
+
+[[curves]]
+fan_channel_id = "intake-gpu-lsi"
+sensor_ids = ["gpu", "hba"]
+points = [[40, 30], [55, 45], [70, 70], [85, 100]]
+fail_safe_duty_percent = 80
+
+[[curves]]
+fan_channel_id = "lsi-cooling"
+sensor_ids = ["hba", "drive:*"]
+points = [[45, 35], [55, 50], [65, 75], [75, 100]]
+fail_safe_duty_percent = 80
+
+[[curves]]
+fan_channel_id = "drive-cage"
+sensor_ids = ["drive:*"]
+points = [[28, 30], [33, 45], [38, 65], [43, 90], [48, 100]]
+fail_safe_duty_percent = 80
