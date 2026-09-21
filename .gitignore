@@ -4,3 +4,4 @@
 
 # Rust build output
 daemon/target/
+*.tar.gz

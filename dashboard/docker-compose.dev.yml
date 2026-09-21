@@ -1,0 +1,17 @@
+# Postgres for local development only (the real deployment runs Postgres inside the LXC).
+#   docker compose -f docker-compose.dev.yml up -d
+#   DATABASE_URL=postgres://fancontrol:fancontrol@127.0.0.1:5433/fancontrol
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: fancontrol
+      POSTGRES_PASSWORD: fancontrol
+      POSTGRES_DB: fancontrol
+    ports:
+      - '127.0.0.1:5433:5432'
+    volumes:
+      - fancontrol-dev-pg:/var/lib/postgresql/data
+
+volumes:
+  fancontrol-dev-pg:

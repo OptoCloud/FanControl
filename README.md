@@ -257,9 +257,14 @@ Known accepted quirks:
   possible, but several (especially `lsi-cooling` and `drive-cage`) are still
   based on limited data. Revisit once real-load history exists.
 
-Not built yet: the dashboard. The plan is a SvelteKit app in an LXC that
-subscribes to `/events`, keeps history in Postgres, and owns trends and
-alerting.
+The dashboard (`dashboard/`) is a SvelteKit app run under Node in an
+unprivileged LXC. It keeps the one connection to the daemon's socket, writes
+history to Postgres (10s samples for 7 days, 1-minute rollups forever), fans
+live data out to browsers over SSE, and owns alerting (stalled fans, unreadable
+or vanished sensors, SMART changes, daemon outages; optional ntfy push). See
+`dashboard/deploy/` for the unit and env template, `dashboard/deploy/package.sh`
+to build the deployable tarball, and `dashboard/scripts/mock-daemon.mjs` plus
+`dashboard/docker-compose.dev.yml` for developing without the hardware.
 
 ## License
 

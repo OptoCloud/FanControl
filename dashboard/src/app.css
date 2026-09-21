@@ -1,0 +1,136 @@
+/* Design tokens. Every component is written against these roles, never raw hex, so light
+   and dark are swapped in exactly one place. Dark is a selected palette (its own steps,
+   validated against the dark surface), not an automatic inversion. */
+:root {
+	color-scheme: light;
+	--page: #f9f9f7;
+	--surface: #fcfcfb;
+	--text-primary: #0b0b0b;
+	--text-secondary: #52514e;
+	--text-muted: #898781;
+	--grid: #e1e0d9;
+	--axis: #c3c2b7;
+	--border: rgba(11, 11, 11, 0.1);
+	--hover: rgba(11, 11, 11, 0.05);
+
+	/* Categorical series, fixed order. The order is what makes adjacent series separable under colour-vision deficiency. */
+	--series-1: #2a78d6;
+	--series-2: #eb6834;
+	--series-3: #1baf7a;
+	--series-4: #eda100;
+	--series-5: #e87ba4;
+	--series-6: #008300;
+
+	/* Meter: the track is a lighter step of the fill's own ramp. */
+	--meter-fill: #2a78d6;
+	--meter-track: #cde2fb;
+
+	/* Status. Reserved: never used for a series, always paired with an icon and a label. */
+	--status-good: #0ca30c;
+	--status-warning: #fab219;
+	--status-serious: #ec835a;
+	--status-critical: #d03b3b;
+
+	font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root:not([data-theme='light']) {
+		color-scheme: dark;
+		--page: #0d0d0d;
+		--surface: #1a1a19;
+		--text-primary: #ffffff;
+		--text-secondary: #c3c2b7;
+		--text-muted: #898781;
+		--grid: #2c2c2a;
+		--axis: #383835;
+		--border: rgba(255, 255, 255, 0.1);
+		--hover: rgba(255, 255, 255, 0.06);
+		--series-1: #3987e5;
+		--series-2: #d95926;
+		--series-3: #199e70;
+		--series-4: #c98500;
+		--series-5: #d55181;
+		--series-6: #008300;
+		--meter-fill: #3987e5;
+		--meter-track: #104281;
+	}
+}
+
+:root[data-theme='dark'] {
+	color-scheme: dark;
+	--page: #0d0d0d;
+	--surface: #1a1a19;
+	--text-primary: #ffffff;
+	--text-secondary: #c3c2b7;
+	--text-muted: #898781;
+	--grid: #2c2c2a;
+	--axis: #383835;
+	--border: rgba(255, 255, 255, 0.1);
+	--hover: rgba(255, 255, 255, 0.06);
+	--series-1: #3987e5;
+	--series-2: #d95926;
+	--series-3: #199e70;
+	--series-4: #c98500;
+	--series-5: #d55181;
+	--series-6: #008300;
+	--meter-fill: #3987e5;
+	--meter-track: #104281;
+}
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+body {
+	margin: 0;
+	background: var(--page);
+	color: var(--text-primary);
+	font-size: 14px;
+	line-height: 1.45;
+}
+
+h1,
+h2,
+h3,
+p {
+	margin: 0;
+}
+
+button {
+	font: inherit;
+	color: inherit;
+}
+
+.card {
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: 10px;
+	padding: 16px;
+	min-width: 0;
+}
+
+.card-title {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--text-secondary);
+}
+
+.muted {
+	color: var(--text-muted);
+}
+
+.numeric {
+	font-variant-numeric: tabular-nums;
+}
+
+.visually-hidden {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}

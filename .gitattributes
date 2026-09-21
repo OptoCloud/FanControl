@@ -2,3 +2,5 @@
 # modprobe/systemd can choke on a trailing \r in a module name or directive.
 deploy/** text eol=lf
 daemon/scripts/** text eol=lf
+dashboard/deploy/** text eol=lf
+dashboard/scripts/** text eol=lf
