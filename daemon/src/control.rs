@@ -64,7 +64,7 @@ impl ControlLoop {
             .iter()
             .filter_map(|curve| {
                 let channel = channels.iter().find(|channel| channel.id == curve.fan_channel_id)?;
-                Some((channel.clone(), FanCurve::from(curve)))
+                Some((channel.clone(), FanCurve::from_config(curve, &config.zones)))
             })
             .collect();
 
@@ -240,6 +240,7 @@ mod tests {
                 .iter()
                 .map(|id| CurveConfig {
                     fan_channel_id: (*id).to_owned(),
+                    zones: Vec::new(),
                     sensor_ids: sensor_ids.iter().map(|s| (*s).to_owned()).collect(),
                     points: vec![(30.0, 20), (50.0, 50), (70.0, 100)],
                     hysteresis_celsius: 3.0,

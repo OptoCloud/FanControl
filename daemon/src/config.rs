@@ -31,6 +31,7 @@ pub struct Config {
     pub gpu: GpuConfig,
     pub hba: HbaConfig,
     pub drive_health: DriveHealthConfig,
+    pub zones: Vec<ZoneConfig>,
     pub channels: Vec<ChannelConfig>,
     pub curves: Vec<CurveConfig>,
 }
@@ -46,6 +47,7 @@ impl Default for Config {
             gpu: GpuConfig::default(),
             hba: HbaConfig::default(),
             drive_health: DriveHealthConfig::default(),
+            zones: Vec::new(),
             channels: Vec::new(),
             curves: Vec::new(),
         }
@@ -160,11 +162,32 @@ fn default_minimum_duty() -> i64 {
     20
 }
 
+/// A physical region of the case: the sensors that share the airflow of one fan or fan
+/// group. Zones exist because a sensor's *kind* doesn't say where it sits: two SSDs may
+/// be `drive:*` sensors but live next to the expansion cards, nowhere near the drive cage.
+///
+/// Membership is explicit ids plus "prefix:*" wildcards, with one rule: a sensor named
+/// explicitly in any zone is claimed by that zone and left out of every other zone's
+/// wildcard. So `drive:*` in the drive-bay zone stops covering an SSD the moment that SSD
+/// is listed in another zone.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ZoneConfig {
+    pub id: String,
+    pub sensor_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CurveConfig {
     pub fan_channel_id: String,
+    /// Zone ids whose members drive this fan. Combined with sensor_ids; at least one of
+    /// the two must be non-empty.
+    #[serde(default)]
+    pub zones: Vec<String>,
     /// Sensor ids, aggregated by max. "prefix:*" matches every sensor id with that prefix.
+    /// Wildcards here are raw: zone claims don't apply to them.
+    #[serde(default)]
     pub sensor_ids: Vec<String>,
     /// [temperature_celsius, duty_percent] pairs, ascending by temperature.
     pub points: Vec<(f64, i64)>,
@@ -263,7 +286,39 @@ impl Config {
             errors.push(format!("Channels '{}' all map to {chip} pwm{index}.", ids.join("', '")));
         }
 
+        for zone in &self.zones {
+            if zone.id.trim().is_empty() {
+                errors.push("A zone has an empty id.".to_owned());
+            }
+
+            if zone.sensor_ids.is_empty() {
+                errors.push(format!("Zone '{}': sensor_ids is empty.", zone.id));
+            }
+        }
+
+        for (id, count) in counts(self.zones.iter().map(|z| z.id.as_str())) {
+            if count > 1 {
+                errors.push(format!("Zone id '{id}' is defined {count} times."));
+            }
+        }
+
+        // A sensor can only sit in one place. Two zones both naming it explicitly is a
+        // contradiction, not a tie to break.
+        let mut claims: Vec<(&str, Vec<&str>)> = Vec::new();
+        for zone in &self.zones {
+            for id in zone.sensor_ids.iter().filter(|id| !id.ends_with(":*")) {
+                match claims.iter_mut().find(|(sensor, _)| *sensor == id.as_str()) {
+                    Some((_, zones)) => zones.push(&zone.id),
+                    None => claims.push((id, vec![&zone.id])),
+                }
+            }
+        }
+        for (sensor, zones) in claims.into_iter().filter(|(_, zones)| zones.len() > 1) {
+            errors.push(format!("Sensor '{sensor}' is named explicitly in zones '{}'; it can only be in one.", zones.join("', '")));
+        }
+
         let channel_ids: HashSet<&str> = self.channels.iter().map(|c| c.id.as_str()).collect();
+        let zone_ids: HashSet<&str> = self.zones.iter().map(|z| z.id.as_str()).collect();
 
         for curve in &self.curves {
             let name = format!("Curve for '{}'", curve.fan_channel_id);
@@ -272,8 +327,12 @@ impl Config {
                 errors.push(format!("{name}: no fan channel with that id exists."));
             }
 
-            if curve.sensor_ids.is_empty() {
-                errors.push(format!("{name}: sensor_ids is empty."));
+            if curve.sensor_ids.is_empty() && curve.zones.is_empty() {
+                errors.push(format!("{name}: both sensor_ids and zones are empty; it needs at least one input."));
+            }
+
+            for zone in curve.zones.iter().filter(|z| !zone_ids.contains(z.as_str())) {
+                errors.push(format!("{name}: no zone with id '{zone}' exists."));
             }
 
             if curve.points.is_empty() {
@@ -342,6 +401,7 @@ mod tests {
     fn curve(channel_id: &str) -> CurveConfig {
         CurveConfig {
             fan_channel_id: channel_id.to_owned(),
+            zones: Vec::new(),
             sensor_ids: vec!["cpu".to_owned()],
             points: vec![(30.0, 30), (70.0, 100)],
             hysteresis_celsius: 3.0,
@@ -429,7 +489,37 @@ mod tests {
         let errors = config(vec![channel("cpu", 1)], vec![empty]).validate();
 
         assert!(has(&errors, "points is empty"));
-        assert!(has(&errors, "sensor_ids is empty"));
+        assert!(has(&errors, "both sensor_ids and zones are empty"));
+    }
+
+    fn zone(id: &str, sensor_ids: &[&str]) -> ZoneConfig {
+        ZoneConfig { id: id.to_owned(), sensor_ids: sensor_ids.iter().map(|s| (*s).to_owned()).collect() }
+    }
+
+    #[test]
+    fn accepts_a_curve_driven_by_zones_alone() {
+        let mut zoned = curve("cage");
+        zoned.sensor_ids.clear();
+        zoned.zones = vec!["drive-bay".to_owned()];
+        let mut config = config(vec![channel("cage", 1)], vec![zoned]);
+        config.zones = vec![zone("drive-bay", &["drive:*"]), zone("main", &["cpu", "drive:naa.1"])];
+
+        assert_eq!(config.validate(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn rejects_unknown_zone_reference_duplicate_zone_ids_empty_zones_and_double_claims() {
+        let mut zoned = curve("cage");
+        zoned.zones = vec!["typo".to_owned()];
+        let mut config = config(vec![channel("cage", 1)], vec![zoned]);
+        config.zones = vec![zone("a", &["drive:naa.1"]), zone("a", &[]), zone("b", &["drive:naa.1", "drive:*"])];
+
+        let errors = config.validate();
+
+        assert!(has(&errors, "no zone with id 'typo'"));
+        assert!(has(&errors, "Zone id 'a' is defined 2 times"));
+        assert!(has(&errors, "Zone 'a': sensor_ids is empty"));
+        assert!(has(&errors, "Sensor 'drive:naa.1' is named explicitly in zones 'a', 'b'"));
     }
 
     #[test]
@@ -473,6 +563,10 @@ mod tests {
             [api]
             socket_uid = 100000
 
+            [[zones]]
+            id = "drive-bay"
+            sensor_ids = ["drive:*"]
+
             [[channels]]
             id = "cpu"
             chip_name = "nct6798"
@@ -480,6 +574,7 @@ mod tests {
 
             [[curves]]
             fan_channel_id = "cpu"
+            zones = ["drive-bay"]
             sensor_ids = ["cpu", "drive:*"]
             points = [[30, 30], [45.5, 45]]
             "#,
@@ -487,6 +582,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.api.socket_uid, Some(100000));
+        assert_eq!(config.zones[0].sensor_ids, vec!["drive:*"]);
+        assert_eq!(config.curves[0].zones, vec!["drive-bay"]);
         assert_eq!(config.channels[0].minimum_duty_percent, 20);
         assert_eq!(config.curves[0].points, vec![(30.0, 30), (45.5, 45)]);
         assert_eq!(config.curves[0].fail_safe_duty_percent, 100);

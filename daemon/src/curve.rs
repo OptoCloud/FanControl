@@ -1,16 +1,34 @@
 //! Piecewise-linear fan curves with asymmetric hysteresis (instant rise, delayed fall).
 
-use crate::config::CurveConfig;
+use crate::config::{CurveConfig, ZoneConfig};
 use crate::sensors::SensorReading;
 use std::collections::HashMap;
+
+/// One input to a curve, after zones have been resolved.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Member {
+    /// An exact sensor id. If it is unavailable the curve's fail-safe becomes a floor.
+    Named(String),
+    /// Every sensor whose id starts with `prefix`, minus `except`: the ids other zones
+    /// have claimed explicitly. Empty for a wildcard written directly on a curve.
+    Wildcard { prefix: String, except: Vec<String> },
+}
+
+impl Member {
+    fn matches(&self, id: &str) -> bool {
+        match self {
+            Member::Named(named) => named == id,
+            Member::Wildcard { prefix, except } => id.starts_with(prefix.as_str()) && !except.iter().any(|e| e == id),
+        }
+    }
+}
 
 /// Maps one or more sensor ids (aggregated by max: the hottest input drives the fan) to a
 /// duty percentage.
 #[derive(Debug, Clone)]
 pub struct FanCurve {
     pub fan_channel_id: String,
-    /// "prefix:*" matches every reading whose id starts with "prefix:".
-    pub sensor_ids: Vec<String>,
+    pub members: Vec<Member>,
     /// (temperature, duty percent), ascending by temperature. Guaranteed by config validation.
     pub points: Vec<(f64, u8)>,
     /// Duty may rise immediately but only drops once the driving temperature has fallen
@@ -23,16 +41,42 @@ pub struct FanCurve {
     pub fail_safe_duty_percent: u8,
 }
 
-impl From<&CurveConfig> for FanCurve {
-    /// Expects a config that passed validation (duties already known to be 0-100).
-    fn from(config: &CurveConfig) -> Self {
+impl FanCurve {
+    /// Expects a config that passed validation (duties 0-100, every zone id known).
+    pub fn from_config(config: &CurveConfig, zones: &[ZoneConfig]) -> Self {
+        let mut members: Vec<Member> = config.sensor_ids.iter().map(|id| member(id, &[])).collect();
+
+        for zone in zones.iter().filter(|zone| config.zones.contains(&zone.id)) {
+            // What other zones pin down explicitly is not this zone's, however broad its wildcards.
+            let claimed_elsewhere: Vec<String> = zones
+                .iter()
+                .filter(|other| other.id != zone.id)
+                .flat_map(|other| other.sensor_ids.iter())
+                .filter(|id| !is_wildcard(id))
+                .cloned()
+                .collect();
+            members.extend(zone.sensor_ids.iter().map(|id| member(id, &claimed_elsewhere)));
+        }
+
         Self {
             fan_channel_id: config.fan_channel_id.clone(),
-            sensor_ids: config.sensor_ids.clone(),
+            members,
             points: config.points.iter().map(|(temperature, duty)| (*temperature, (*duty).clamp(0, 100) as u8)).collect(),
             hysteresis_celsius: config.hysteresis_celsius,
             fail_safe_duty_percent: config.fail_safe_duty_percent.clamp(0, 100) as u8,
         }
+    }
+}
+
+fn is_wildcard(id: &str) -> bool {
+    id.ends_with(":*")
+}
+
+fn member(id: &str, claimed_elsewhere: &[String]) -> Member {
+    if is_wildcard(id) {
+        Member::Wildcard { prefix: id[..id.len() - 1].to_owned(), except: claimed_elsewhere.to_vec() }
+    } else {
+        Member::Named(id.to_owned())
     }
 }
 
@@ -80,14 +124,17 @@ impl CurveEngine {
 }
 
 fn select_driving_temperature(curve: &FanCurve, readings: &[SensorReading]) -> (Option<f64>, bool) {
-    let (wildcards, named): (Vec<&str>, Vec<&str>) = curve.sensor_ids.iter().map(String::as_str).partition(|id| id.ends_with(":*"));
-    let prefixes: Vec<&str> = wildcards.iter().map(|id| &id[..id.len() - 1]).collect();
-
-    let matches =
-        |reading: &SensorReading| named.contains(&reading.id.as_str()) || prefixes.iter().any(|prefix| reading.id.starts_with(prefix));
+    let matches = |reading: &SensorReading| curve.members.iter().any(|member| member.matches(&reading.id));
 
     let available: Vec<&SensorReading> = readings.iter().filter(|r| r.celsius_or_null.is_some() && matches(r)).collect();
-    let named_sensor_unavailable = named.iter().any(|id| !available.iter().any(|r| r.id == *id));
+    let named_sensor_unavailable = curve
+        .members
+        .iter()
+        .filter_map(|member| match member {
+            Member::Named(id) => Some(id),
+            Member::Wildcard { .. } => None,
+        })
+        .any(|id| !available.iter().any(|r| r.id == *id));
     let hottest = available.iter().filter_map(|r| r.celsius_or_null).reduce(f64::max);
 
     (hottest, named_sensor_unavailable)
@@ -126,7 +173,7 @@ mod tests {
     fn curve() -> FanCurve {
         FanCurve {
             fan_channel_id: "cpu".to_owned(),
-            sensor_ids: vec!["cpu".to_owned()],
+            members: vec![Member::Named("cpu".to_owned())],
             points: vec![(30.0, 20), (50.0, 50), (70.0, 100)],
             hysteresis_celsius: 3.0,
             fail_safe_duty_percent: 100,
@@ -134,7 +181,28 @@ mod tests {
     }
 
     fn curve_on(sensor_ids: &[&str], fail_safe: u8) -> FanCurve {
-        FanCurve { sensor_ids: sensor_ids.iter().map(|s| (*s).to_owned()).collect(), fail_safe_duty_percent: fail_safe, ..curve() }
+        FanCurve { members: sensor_ids.iter().map(|id| member(id, &[])).collect(), fail_safe_duty_percent: fail_safe, ..curve() }
+    }
+
+    fn zone(id: &str, sensor_ids: &[&str]) -> ZoneConfig {
+        ZoneConfig { id: id.to_owned(), sensor_ids: sensor_ids.iter().map(|s| (*s).to_owned()).collect() }
+    }
+
+    fn zoned_curve(zones: &[&str], sensor_ids: &[&str]) -> CurveConfig {
+        CurveConfig {
+            fan_channel_id: "cage".to_owned(),
+            zones: zones.iter().map(|z| (*z).to_owned()).collect(),
+            sensor_ids: sensor_ids.iter().map(|s| (*s).to_owned()).collect(),
+            points: vec![(30.0, 20), (50.0, 50), (70.0, 100)],
+            hysteresis_celsius: 3.0,
+            fail_safe_duty_percent: 80,
+        }
+    }
+
+    /// The case that motivated zones: two SSDs are drive sensors but sit in the main
+    /// compartment, so the drive-bay fan must not react to them.
+    fn layout() -> Vec<ZoneConfig> {
+        vec![zone("drive-bay", &["drive:*"]), zone("main", &["cpu", "hba", "drive:ssd1", "drive:ssd2"])]
     }
 
     fn reading(id: &str, celsius: f64) -> SensorReading {
@@ -190,6 +258,52 @@ mod tests {
         engine.evaluate(&curve(), &[reading("cpu", 60.0)]);
 
         assert_eq!(engine.evaluate(&other, &[reading("cpu", 40.0)]), 35);
+    }
+
+    #[test]
+    fn a_zone_wildcard_skips_sensors_another_zone_names_explicitly() {
+        let curve = FanCurve::from_config(&zoned_curve(&["drive-bay"], &[]), &layout());
+        let readings = [reading("drive:hdd1", 40.0), reading("drive:ssd1", 65.0), reading("drive:ssd2", 70.0), reading("cpu", 90.0)];
+
+        // Hot SSDs and CPU are ignored; the 40C HDD drives the cage fan.
+        assert_eq!(CurveEngine::default().evaluate(&curve, &readings), 35);
+    }
+
+    #[test]
+    fn a_zone_naming_a_sensor_explicitly_does_get_it() {
+        let curve = FanCurve::from_config(&zoned_curve(&["main"], &[]), &layout());
+        let readings = [
+            reading("drive:hdd1", 90.0),
+            reading("drive:ssd1", 40.0),
+            reading("drive:ssd2", 20.0),
+            reading("cpu", 30.0),
+            reading("hba", 30.0),
+        ];
+
+        assert_eq!(CurveEngine::default().evaluate(&curve, &readings), 35);
+        // Members named explicitly by the zone are still "named": if one (here drive:ssd2,
+        // missing from the readings entirely) is unavailable, the fail-safe floor applies
+        // exactly as for a sensor written directly on the curve.
+        assert_eq!(CurveEngine::default().evaluate(&curve, &[reading("drive:ssd1", 40.0), reading("cpu", 30.0), reading("hba", 30.0)]), 80);
+    }
+
+    #[test]
+    fn a_curves_own_wildcard_is_raw_and_zones_combine_with_sensor_ids() {
+        // lsi-cooling style: hba plus every drive regardless of zone claims.
+        let raw = FanCurve::from_config(&zoned_curve(&[], &["hba", "drive:*"]), &layout());
+        let readings = [reading("drive:ssd1", 50.0), reading("hba", 30.0)];
+        assert_eq!(CurveEngine::default().evaluate(&raw, &readings), 50);
+
+        let combined = FanCurve::from_config(&zoned_curve(&["drive-bay"], &["hba"]), &layout());
+        let readings = [reading("drive:hdd1", 30.0), reading("drive:ssd1", 90.0), reading("hba", 50.0)];
+        assert_eq!(CurveEngine::default().evaluate(&combined, &readings), 50);
+    }
+
+    #[test]
+    fn without_zones_from_config_matches_the_old_behaviour() {
+        let curve = FanCurve::from_config(&zoned_curve(&[], &["cpu", "drive:*"]), &[]);
+
+        assert_eq!(curve.members, vec![Member::Named("cpu".to_owned()), Member::Wildcard { prefix: "drive:".to_owned(), except: vec![] }]);
     }
 
     #[test]

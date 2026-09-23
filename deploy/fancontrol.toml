@@ -40,6 +40,23 @@ enabled = true
 poll_interval_secs = 900
 timeout_secs = 60
 
+# Zones group sensors by where they physically sit, not by sensor category. The two
+# Samsung 870 EVO SSDs are `drivetemp` sensors like every HDD, but they are screwed to the
+# case in the top-left component compartment with the LSI HBA, GPU and CPU, not in the
+# drive cage: they're pulled out of drive-bay's "drive:*" wildcard into component-bay.
+#
+# REPLACE the two WWNs below before deploying: find them with
+#   ls -l /dev/disk/by-id/ | grep ata-Samsung_SSD
+# on orion (or read them off a live /status response as "drive:<wwn>").
+
+[[zones]]
+id = "drive-bay"
+sensor_ids = ["drive:*"]
+
+[[zones]]
+id = "component-bay"
+sensor_ids = ["hba", "drive:naa.5002538REPLACE_WITH_SSD1_WWN", "drive:naa.5002538REPLACE_WITH_SSD2_WWN"]
+
 # Header mapping verified on this board (ASRock B550 Pro4, NCT6798D) by walking each
 # channel in manual mode and watching which tach responds. pwm6 is unwired.
 
@@ -103,18 +120,20 @@ fail_safe_duty_percent = 100
 
 [[curves]]
 fan_channel_id = "intake-gpu-lsi"
-sensor_ids = ["gpu", "hba"]
+zones = ["component-bay"]
+sensor_ids = ["gpu"]
 points = [[40, 30], [55, 45], [70, 70], [85, 100]]
 fail_safe_duty_percent = 80
 
 [[curves]]
 fan_channel_id = "lsi-cooling"
-sensor_ids = ["hba", "drive:*"]
+zones = ["drive-bay"]
+sensor_ids = ["hba"]
 points = [[45, 35], [55, 50], [65, 75], [75, 100]]
 fail_safe_duty_percent = 80
 
 [[curves]]
 fan_channel_id = "drive-cage"
-sensor_ids = ["drive:*"]
+zones = ["drive-bay"]
 points = [[28, 30], [33, 45], [38, 65], [43, 90], [48, 100]]
 fail_safe_duty_percent = 80

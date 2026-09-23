@@ -52,6 +52,16 @@ life as a .NET daemon; that implementation is in the git history.)
   a curve is unavailable the fan runs at the curve's `fail_safe_duty_percent`;
   if only some explicitly named sensor is (say `gpu` on a `gpu`+`hba` curve),
   the curve still runs but that fail-safe becomes its floor.
+- **A sensor's kind doesn't decide which fan sees it; its physical location
+  does.** `drive:*` is a sensor *category*, not a location: on this board two
+  SSDs sit screwed to the case in the top-left compartment with the LSI card,
+  GPU and CPU, nowhere near the drive cage. `zones` group sensor ids by where
+  they physically sit, and a curve names zones (`zones = [...]`) instead of,
+  or alongside, raw `sensor_ids`. A sensor named explicitly in one zone's
+  `sensor_ids` is claimed by it and excluded from every other zone's `drive:*`
+  wildcard, so the drive-cage curve's zone stops seeing the SSDs the moment
+  they're listed in the component-bay zone instead, with no drive-cage config
+  change needed.
 - **One failing channel doesn't take the others down.** A header whose sysfs
   write fails is handed back to automatic control and retried every poll,
   while the remaining channels keep being driven.
@@ -200,6 +210,30 @@ journalctl -u fancontrol -f
 `channels` and `curves` in `fancontrol.toml` are specific to one board and its
 wiring. Leave both empty to run monitor-only, which never writes to any `pwmN`
 file.
+
+`zones` (optional) group sensor ids by physical location so a curve can react
+to "everything in this part of the case" instead of listing chip-level
+categories that don't say where a device actually sits. On orion, the two
+Samsung 870 EVO SSDs are `drivetemp` sensors like every HDD but live in the
+component compartment, not the drive cage, so they're pulled out of the
+drive-bay zone's `drive:*` wildcard into their own zone:
+
+```toml
+[[zones]]
+id = "drive-bay"
+sensor_ids = ["drive:*"]
+
+[[zones]]
+id = "component-bay"
+sensor_ids = ["hba", "drive:naa.5002538...ssd1", "drive:naa.5002538...ssd2"]
+```
+
+A curve then writes `zones = ["drive-bay"]` instead of `sensor_ids =
+["drive:*"]`, and gets every drive *except* the two SSDs automatically:
+naming a sensor explicitly in `component-bay` removes it from `drive-bay`'s
+wildcard, wherever `drive-bay` is used. Find a drive's WWN with
+`ls -l /dev/disk/by-id/ | grep ata-Samsung_SSD` (or `by-id/wwn-*`) on the
+host; it's the same id the `/status` API reports as `drive:<wwn>`.
 
 `fancontrol.service` runs as root (sysfs PWM attributes are root-owned, mode
 644). On stop it relies on `TimeoutStopSec=30` + `SIGTERM` so the daemon
