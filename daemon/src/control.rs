@@ -246,7 +246,6 @@ mod tests {
                     zones: Vec::new(),
                     sensor_ids: sensor_ids.iter().map(|s| (*s).to_owned()).collect(),
                     points: vec![(30.0, 20), (50.0, 50), (70.0, 100)],
-                    floors: Vec::new(),
                     hysteresis_celsius: 3.0,
                     fail_safe_duty_percent: 80,
                 })

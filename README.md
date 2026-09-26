@@ -51,7 +51,7 @@ life as a .NET daemon; that implementation is in the git history.)
 - **An unreadable sensor is never treated as "cold".** If every sensor behind
   a curve is unavailable the fan runs at the curve's `fail_safe_duty_percent`;
   if only some explicitly named sensor is (say `gpu` on a `gpu`+`hba` curve),
-  the curve still runs but that fail-safe becomes its floor.
+  the curve still runs but never below that fail-safe duty.
 - **A sensor's kind doesn't decide which fan sees it; its physical location
   does.** `drive:*` is a sensor *category*, not a location: on this board two
   SSDs sit screwed to the case in the top compartment with the LSI card, GPU
@@ -66,12 +66,6 @@ life as a .NET daemon; that implementation is in the git history.)
   port (`port:pci-0000:01:00.1-ata-3`), so a swapped disk lands in the right
   zone with no config change. by-path carries the controller's PCI address,
   so two controllers' "port 3" never collide.
-- **A floor lets a sensor raise a fan without setting it.** A curve's
-  `[[curves.floors]]` are extra inputs with their own points; the fan runs at
-  the highest of the curve and its floors. On orion the 4-bay stack exhausts
-  around the PSU while the fans sit behind the 8-bay, so extra duty mostly
-  cools the 8-bay: the 8-bay sets the speed, and the 4-bay only raises it
-  once one of its drives is genuinely hot.
 - **One failing channel doesn't take the others down.** A header whose sysfs
   write fails is handed back to automatic control and retried every poll,
   while the remaining channels keep being driven.
@@ -79,7 +73,7 @@ life as a .NET daemon; that implementation is in the git history.)
   unsorted curve points, a curve naming an unknown channel, or a channel with
   no curve (or two) all refuse to start with every problem listed.
   `fancontrol --check` does only that, then (on the target machine) lists what
-  every curve and floor would read and warns about any member that matches
+  every curve would read and warns about any member that matches
   nothing there, and exits. It reads no temperature and touches no fan.
 - **Fan stalls are detected.** A header reading 0 RPM for several consecutive
   polls while being driven is logged and flagged as `stalled`.
@@ -240,24 +234,21 @@ sensor_ids = ["port:pci-0000:03:00.0-sas-*"]
 id = "four-bay"
 sensor_ids = ["port:pci-0000:01:00.1-ata-3", "port:pci-0000:01:00.1-ata-6", "port:pci-0000:01:00.1-ata-5"]
 
+# The hottest HDD in either stack sets the drive-cage fans.
 [[curves]]
 fan_channel_id = "drive-cage"
-zones = ["eight-bay"]
+zones = ["eight-bay", "four-bay"]
 points = [[28, 30], [33, 45], [38, 65], [43, 90], [48, 100]]
-
-[[curves.floors]]
-zones = ["four-bay"]
-points = [[45, 30], [50, 65], [55, 100]]
 ```
 
 A member named explicitly in one zone is claimed by it and left out of every
 other zone's wildcards, so a zone written as `drive:*` stops covering a drive
 the moment its port or WWN is listed in another zone. A port named explicitly
 with no drive on it counts as an unreadable sensor (the curve's fail-safe
-becomes a floor), so list only filled bays. `ls -l /dev/disk/by-path/` on the
+becomes its minimum), so list only filled bays. `ls -l /dev/disk/by-path/` on the
 host lists every port; the daemon uses the shortest link for each disk,
 ignoring partitions. Run `--check` on the host after editing zones: it prints
-exactly which drives each curve and floor picked up.
+exactly which drives each curve picked up.
 
 `fancontrol.service` runs as root (sysfs PWM attributes are root-owned, mode
 644). On stop it relies on `TimeoutStopSec=30` + `SIGTERM` so the daemon

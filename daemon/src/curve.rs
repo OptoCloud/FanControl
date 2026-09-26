@@ -9,7 +9,7 @@ use std::fmt;
 /// reading's keys: its id, and "port:<by-path name>" for a drive whose port is known.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Member {
-    /// An exact sensor id or port. If it is unavailable the curve's fail-safe becomes a floor.
+    /// An exact sensor id or port. If it is unavailable the curve's fail-safe duty becomes its minimum.
     Named(String),
     /// Every reading with a key starting with `prefix`, minus `except`: the ids and ports
     /// other zones have claimed explicitly. Empty for a wildcard written directly on a curve.
@@ -40,13 +40,6 @@ impl fmt::Display for Member {
     }
 }
 
-/// A floor: its own sensors through its own points, able only to raise the curve's duty.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Floor {
-    pub members: Vec<Member>,
-    pub points: Vec<(f64, u8)>,
-}
-
 /// Maps one or more sensor ids (aggregated by max: the hottest input drives the fan) to a
 /// duty percentage.
 #[derive(Debug, Clone)]
@@ -55,14 +48,11 @@ pub struct FanCurve {
     pub members: Vec<Member>,
     /// (temperature, duty percent), ascending by temperature. Guaranteed by config validation.
     pub points: Vec<(f64, u8)>,
-    /// The fan runs at the highest of this curve's duty and each floor's. Each floor keeps
-    /// its own hysteresis state and applies the fail-safe rules to its own sensors.
-    pub floors: Vec<Floor>,
     /// Duty may rise immediately but only drops once the driving temperature has fallen
     /// this far below the point that produced the current duty. Prevents the classic
     /// hunting at a curve breakpoint.
     pub hysteresis_celsius: f64,
-    /// Applied instead of the curve when every sensor is unavailable, and as a floor under
+    /// Applied instead of the curve when every sensor is unavailable, and as the minimum under
     /// it when only some explicitly named sensor is. Per curve rather than global: how
     /// "safe" the number has to be depends on what the fan is protecting.
     pub fail_safe_duty_percent: u8,
@@ -75,11 +65,6 @@ impl FanCurve {
             fan_channel_id: config.fan_channel_id.clone(),
             members: resolve_members(&config.zones, &config.sensor_ids, zones),
             points: duty_points(&config.points),
-            floors: config
-                .floors
-                .iter()
-                .map(|floor| Floor { members: resolve_members(&floor.zones, &floor.sensor_ids, zones), points: duty_points(&floor.points) })
-                .collect(),
             hysteresis_celsius: config.hysteresis_celsius,
             fail_safe_duty_percent: config.fail_safe_duty_percent.clamp(0, 100) as u8,
         }
@@ -121,9 +106,8 @@ fn member(id: &str, claimed_elsewhere: &[String]) -> Member {
 /// algorithm itself needs; it is not history.
 #[derive(Default)]
 pub struct CurveEngine {
-    /// Per channel and input (0 = the curve itself, 1.. = its floors): the (temperature,
-    /// duty) last applied.
-    last_applied: HashMap<(String, usize), (f64, u8)>,
+    /// Per channel: the (temperature, duty) last applied.
+    last_applied: HashMap<String, (f64, u8)>,
 }
 
 impl CurveEngine {
@@ -131,51 +115,31 @@ impl CurveEngine {
     ///  - if none of the curve's sensors produced a reading, returns the fail-safe duty;
     ///  - if a sensor the curve names explicitly (not via a wildcard) is unavailable while
     ///    others still read, the curve runs on what's left but the fail-safe duty becomes a
-    ///    floor, since the missing sensor could be the hot one.
+    ///    minimum, since the missing sensor could be the hot one.
     ///
     /// Wildcard members are exempt from the second rule: drives come and go (hot-swap,
     /// standby) and the ones still present are a fair stand-in for the group.
-    ///
-    /// Each floor is evaluated the same way on its own sensors and points, and the highest
-    /// duty wins.
     pub fn evaluate(&mut self, curve: &FanCurve, readings: &[SensorReading]) -> u8 {
-        let mut duty = self.evaluate_input(curve, 0, &curve.members, &curve.points, readings);
-        for (index, floor) in curve.floors.iter().enumerate() {
-            duty = duty.max(self.evaluate_input(curve, index + 1, &floor.members, &floor.points, readings));
-        }
-
-        duty
-    }
-
-    fn evaluate_input(
-        &mut self,
-        curve: &FanCurve,
-        input: usize,
-        members: &[Member],
-        points: &[(f64, u8)],
-        readings: &[SensorReading],
-    ) -> u8 {
-        let (driving_temperature, named_sensor_unavailable) = select_driving_temperature(members, readings);
+        let (driving_temperature, named_sensor_unavailable) = select_driving_temperature(&curve.members, readings);
         let Some(temperature) = driving_temperature else {
             return curve.fail_safe_duty_percent;
         };
 
-        let duty = self.apply_hysteresis(curve, input, points, temperature);
+        let duty = self.apply_hysteresis(curve, temperature);
         if named_sensor_unavailable { duty.max(curve.fail_safe_duty_percent) } else { duty }
     }
 
-    fn apply_hysteresis(&mut self, curve: &FanCurve, input: usize, points: &[(f64, u8)], temperature: f64) -> u8 {
-        let target = interpolate(points, temperature);
-        let key = (curve.fan_channel_id.clone(), input);
+    fn apply_hysteresis(&mut self, curve: &FanCurve, temperature: f64) -> u8 {
+        let target = interpolate(&curve.points, temperature);
 
-        if let Some(&(last_temperature, last_duty)) = self.last_applied.get(&key) {
+        if let Some(&(last_temperature, last_duty)) = self.last_applied.get(&curve.fan_channel_id) {
             let falling = target < last_duty;
             if falling && temperature > last_temperature - curve.hysteresis_celsius {
                 return last_duty;
             }
         }
 
-        self.last_applied.insert(key, (temperature, target));
+        self.last_applied.insert(curve.fan_channel_id.clone(), (temperature, target));
         target
     }
 }
@@ -219,7 +183,7 @@ fn interpolate(points: &[(f64, u8)], temperature: f64) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, FloorConfig};
+    use crate::config::Config;
     use crate::sensors::SensorCategory;
 
     fn curve() -> FanCurve {
@@ -227,7 +191,6 @@ mod tests {
             fan_channel_id: "cpu".to_owned(),
             members: vec![Member::Named("cpu".to_owned())],
             points: vec![(30.0, 20), (50.0, 50), (70.0, 100)],
-            floors: Vec::new(),
             hysteresis_celsius: 3.0,
             fail_safe_duty_percent: 100,
         }
@@ -247,7 +210,6 @@ mod tests {
             zones: zones.iter().map(|z| (*z).to_owned()).collect(),
             sensor_ids: sensor_ids.iter().map(|s| (*s).to_owned()).collect(),
             points: vec![(30.0, 20), (50.0, 50), (70.0, 100)],
-            floors: Vec::new(),
             hysteresis_celsius: 3.0,
             fail_safe_duty_percent: 80,
         }
@@ -336,7 +298,7 @@ mod tests {
 
         assert_eq!(CurveEngine::default().evaluate(&curve, &readings), 35);
         // Members named explicitly by the zone are still "named": if one (here drive:ssd2,
-        // missing from the readings entirely) is unavailable, the fail-safe floor applies
+        // missing from the readings entirely) is unavailable, the fail-safe minimum applies
         // exactly as for a sensor written directly on the curve.
         assert_eq!(CurveEngine::default().evaluate(&curve, &[reading("drive:ssd1", 40.0), reading("cpu", 30.0), reading("hba", 30.0)]), 80);
     }
@@ -383,7 +345,6 @@ mod tests {
             let curve = FanCurve::from_config(curve_config, &config.zones);
             assert_eq!(curve.fan_channel_id, channel);
             assert_eq!(curve.members, members, "{channel}");
-            assert!(curve.floors.is_empty(), "{channel}");
         }
     }
 
@@ -392,7 +353,7 @@ mod tests {
     }
 
     #[test]
-    fn the_orion_config_lets_the_eight_bay_set_the_cage_fan_and_the_four_bay_only_raise_it() {
+    fn the_orion_config_lets_the_hottest_hdd_in_either_stack_set_the_cage_fan() {
         let config = Config::parse(include_str!("../../deploy/fancontrol.toml")).unwrap();
         assert_eq!(config.validate(), Vec::<String>::new());
         let curve = |id: &str| FanCurve::from_config(config.curves.iter().find(|c| c.fan_channel_id == id).unwrap(), &config.zones);
@@ -406,24 +367,19 @@ mod tests {
         let ssd1 = drive("naa.5002538f543365df", "pci-0000:01:00.1-ata-1", 43.0);
         let ssd2 = drive("naa.5002538f3334be53", "pci-0000:01:00.1-ata-2", 40.0);
 
+        // Every HDD in both stacks, neither SSD.
         let cage = curve("drive-cage");
-        assert!(matched(&cage, &void));
-        assert!(![&scratch, &spare3, &spare4, &ssd1, &ssd2].iter().any(|r| matched(&cage, r)));
-        assert_eq!(cage.floors.len(), 1);
-        assert!([&scratch, &spare3, &spare4].iter().all(|r| cage.floors[0].members.iter().any(|m| m.matches(r))));
+        assert!([&void, &scratch, &spare3, &spare4].iter().all(|r| matched(&cage, r)));
+        assert!(![&ssd1, &ssd2].iter().any(|r| matched(&cage, r)));
 
-        // A typical minute from the recorded history. The spares alone would set 65%; the
-        // 8-bay sets 49%.
+        // A typical minute from the recorded history: the hottest HDD is a spare at 38C, and
+        // it sets the fan. The warmer SSDs don't.
         let readings = [void.clone(), scratch.clone(), spare3.clone(), spare4.clone(), ssd1.clone(), ssd2.clone()];
-        assert_eq!(CurveEngine::default().evaluate(&cage, &readings), 49);
-        // A spare running away takes the fan up regardless of the 8-bay.
-        let hot_spare = [void.clone(), scratch.clone(), drive("naa.5000c50113c687c0", "pci-0000:01:00.1-ata-6", 50.0), spare4.clone()];
-        assert_eq!(CurveEngine::default().evaluate(&cage, &hot_spare), 65);
+        assert_eq!(CurveEngine::default().evaluate(&cage, &readings), 65);
 
         // A replacement disk in a 4-bay port is covered with no config change: the zone is
         // the bay, not the disk.
-        let swapped = drive("naa.5000c500deadbeef", "pci-0000:01:00.1-ata-6", 50.0);
-        assert!(cage.floors[0].members.iter().any(|m| m.matches(&swapped)));
+        assert!(matched(&cage, &drive("naa.5000c500deadbeef", "pci-0000:01:00.1-ata-6", 50.0)));
 
         let intake = curve("intake-gpu-lsi");
         assert!([&ssd1, &ssd2].iter().all(|r| matched(&intake, r)));
@@ -449,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn a_named_port_with_no_drive_on_it_floors_at_the_fail_safe() {
+    fn a_named_port_with_no_drive_on_it_runs_at_least_at_the_fail_safe() {
         let curve = FanCurve::from_config(&zoned_curve(&[], &["port:pci-a-ata-3", "port:pci-a-ata-5"]), &[]);
 
         assert_eq!(CurveEngine::default().evaluate(&curve, &[drive("naa.1", "pci-a-ata-3", 40.0)]), 80);
@@ -457,56 +413,6 @@ mod tests {
             CurveEngine::default().evaluate(&curve, &[drive("naa.1", "pci-a-ata-3", 40.0), drive("naa.2", "pci-a-ata-5", 40.0)]),
             35
         );
-    }
-
-    fn with_floor(sensor_ids: &[&str], points: Vec<(f64, u8)>) -> FanCurve {
-        FanCurve {
-            floors: vec![Floor { members: sensor_ids.iter().map(|id| member(id, &[])).collect(), points }],
-            ..curve_on(&["cpu"], 80)
-        }
-    }
-
-    #[test]
-    fn a_floor_contributes_nothing_until_its_sensors_are_hot() {
-        let curve = with_floor(&["spare"], vec![(45.0, 20), (55.0, 100)]);
-
-        // The spare is warmer than cpu but under the floor's first point: cpu sets the duty.
-        assert_eq!(CurveEngine::default().evaluate(&curve, &[reading("cpu", 40.0), reading("spare", 44.0)]), 35);
-        // Hot enough that the floor wins.
-        assert_eq!(CurveEngine::default().evaluate(&curve, &[reading("cpu", 40.0), reading("spare", 50.0)]), 60);
-    }
-
-    #[test]
-    fn a_floor_keeps_its_own_hysteresis_state() {
-        let curve = with_floor(&["spare"], vec![(45.0, 20), (55.0, 100)]);
-        let mut engine = CurveEngine::default();
-
-        assert_eq!(engine.evaluate(&curve, &[reading("cpu", 40.0), reading("spare", 50.0)]), 60);
-        // The spare cools 2C, within hysteresis: the floor holds 60 while cpu drops freely.
-        assert_eq!(engine.evaluate(&curve, &[reading("cpu", 30.0), reading("spare", 48.0)]), 60);
-        // Past hysteresis the floor lets go, and cpu's own state was never held by it.
-        assert_eq!(engine.evaluate(&curve, &[reading("cpu", 30.0), reading("spare", 40.0)]), 20);
-    }
-
-    #[test]
-    fn an_unreadable_floor_sensor_is_never_treated_as_cold() {
-        let curve = with_floor(&["spare"], vec![(45.0, 20), (55.0, 100)]);
-
-        assert_eq!(CurveEngine::default().evaluate(&curve, &[reading("cpu", 40.0), unavailable("spare")]), 80);
-        assert_eq!(CurveEngine::default().evaluate(&curve, &[reading("cpu", 40.0)]), 80);
-    }
-
-    #[test]
-    fn floors_resolve_zones_with_the_same_claims() {
-        let mut config = zoned_curve(&["drive-bay"], &[]);
-        config.floors =
-            vec![FloorConfig { zones: vec!["spares".to_owned()], sensor_ids: Vec::new(), points: vec![(45.0, 20), (55.0, 100)] }];
-        let zones = vec![zone("drive-bay", &["drive:*"]), zone("spares", &["drive:s1", "drive:s2"]), zone("main", &["drive:ssd1"])];
-
-        let curve = FanCurve::from_config(&config, &zones);
-
-        assert_eq!(curve.members[0].to_string(), "drive:* except drive:s1, drive:s2, drive:ssd1");
-        assert_eq!(curve.floors[0].members, vec![Member::Named("drive:s1".to_owned()), Member::Named("drive:s2".to_owned())]);
     }
 
     #[test]
@@ -517,19 +423,19 @@ mod tests {
     }
 
     #[test]
-    fn fail_safe_becomes_a_floor_when_only_some_named_sensors_are_unavailable() {
+    fn fail_safe_becomes_the_minimum_when_only_some_named_sensors_are_unavailable() {
         let curve = curve_on(&["gpu", "hba"], 80);
 
         // hba alone says 35, but the unreadable gpu could be the hot one.
         assert_eq!(CurveEngine::default().evaluate(&curve, &[unavailable("gpu"), reading("hba", 40.0)]), 80);
         // A named sensor missing from the readings entirely counts as unavailable too.
         assert_eq!(CurveEngine::default().evaluate(&curve, &[reading("hba", 40.0)]), 80);
-        // The floor never lowers a hotter curve result.
+        // The minimum never lowers a hotter curve result.
         assert_eq!(CurveEngine::default().evaluate(&curve, &[reading("hba", 90.0)]), 100);
     }
 
     #[test]
-    fn unavailable_wildcard_member_does_not_trigger_the_fail_safe_floor() {
+    fn unavailable_wildcard_member_does_not_trigger_the_fail_safe_minimum() {
         let duty = CurveEngine::default().evaluate(&curve_on(&["drive:*"], 80), &[reading("drive:a", 40.0), unavailable("drive:b")]);
 
         assert_eq!(duty, 35);

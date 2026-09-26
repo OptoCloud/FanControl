@@ -160,7 +160,7 @@ fn start_status_api(_config: &Config, _hub: &Arc<StatusHub>) -> Result<(), Strin
     Ok(())
 }
 
-/// For --check: what every curve and floor would read on this machine. Resolution only
+/// For --check: what every curve would read on this machine. Resolution only
 /// lists hwmon and the by-path links: no temperature is read and no fan is touched, so a
 /// zone config can be checked against the real drives before it goes live.
 fn report_curve_inputs(config: &Config, sysfs: &dyn SysFs) {
@@ -188,9 +188,6 @@ fn report_curve_inputs(config: &Config, sysfs: &dyn SysFs) {
         let curve = FanCurve::from_config(curve_config, &config.zones);
         println!();
         report_input(&curve.fan_channel_id, &curve.members, &present);
-        for (index, floor) in curve.floors.iter().enumerate() {
-            report_input(&format!("{} floor {}", curve.fan_channel_id, index + 1), &floor.members, &present);
-        }
     }
 }
 

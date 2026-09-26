@@ -158,7 +158,7 @@ pub struct ChannelConfig {
     pub chip_name: String,
     /// The N in pwmN / fanN.
     pub index: i64,
-    /// Floor below which this fan stalls. The curve result is never allowed under it.
+    /// Duty below which this fan stalls. The curve result is never allowed under it.
     #[serde(default = "default_minimum_duty")]
     pub minimum_duty_percent: i64,
 }
@@ -201,31 +201,10 @@ pub struct CurveConfig {
     pub sensor_ids: Vec<String>,
     /// [temperature_celsius, duty_percent] pairs, ascending by temperature.
     pub points: Vec<(f64, i64)>,
-    /// Further inputs that can only raise this fan's duty, never set it. Absent means none,
-    /// and the curve behaves exactly as it did before floors existed.
-    #[serde(default)]
-    pub floors: Vec<FloorConfig>,
     #[serde(default = "default_hysteresis")]
     pub hysteresis_celsius: f64,
     #[serde(default = "default_fail_safe")]
     pub fail_safe_duty_percent: i64,
-}
-
-/// A separate input with its own points, for sensors a fan does cool but whose airflow
-/// path it barely controls. The fan runs at the highest of the curve's own duty and every
-/// floor's, so a floor whose points start at or below the channel minimum contributes
-/// nothing until its sensors get hot. On orion: the 4-bay stack exhausts around the PSU
-/// while the fans sit behind the 8-bay, so extra duty mostly cools the 8-bay; letting the
-/// 4-bay set the speed buys little for it and pins the fan high for everyone.
-/// Hysteresis and fail-safe come from the curve.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct FloorConfig {
-    #[serde(default)]
-    pub zones: Vec<String>,
-    #[serde(default)]
-    pub sensor_ids: Vec<String>,
-    pub points: Vec<(f64, i64)>,
 }
 
 fn default_hysteresis() -> f64 {
@@ -359,16 +338,6 @@ impl Config {
             }
 
             validate_input(&mut errors, &name, &curve.zones, &curve.sensor_ids, &curve.points, &zone_ids);
-            for (index, floor) in curve.floors.iter().enumerate() {
-                validate_input(
-                    &mut errors,
-                    &format!("{name}, floor {}", index + 1),
-                    &floor.zones,
-                    &floor.sensor_ids,
-                    &floor.points,
-                    &zone_ids,
-                );
-            }
 
             if !is_duty(curve.fail_safe_duty_percent) {
                 errors.push(format!("{name}: fail_safe_duty_percent must be 0-100 (is {}).", curve.fail_safe_duty_percent));
@@ -397,7 +366,7 @@ impl Config {
     }
 }
 
-/// The checks shared by a curve's own input and each of its floors.
+/// A curve's inputs and points.
 fn validate_input(
     errors: &mut Vec<String>,
     name: &str,
@@ -463,7 +432,6 @@ mod tests {
             zones: Vec::new(),
             sensor_ids: vec!["cpu".to_owned()],
             points: vec![(30.0, 30), (70.0, 100)],
-            floors: Vec::new(),
             hysteresis_celsius: 3.0,
             fail_safe_duty_percent: 100,
         }
@@ -580,57 +548,6 @@ mod tests {
         assert!(has(&errors, "Zone id 'a' is defined 2 times"));
         assert!(has(&errors, "Zone 'a': sensor_ids is empty"));
         assert!(has(&errors, "Sensor 'drive:naa.1' is named explicitly in zones 'a', 'b'"));
-    }
-
-    #[test]
-    fn validates_each_floor_like_a_curve_input() {
-        let mut floored = curve("cpu");
-        floored.floors = vec![
-            FloorConfig { zones: vec!["typo".to_owned()], sensor_ids: Vec::new(), points: vec![(50.0, 60), (40.0, 30)] },
-            FloorConfig { zones: Vec::new(), sensor_ids: Vec::new(), points: vec![(50.0, 101)] },
-        ];
-
-        let errors = config(vec![channel("cpu", 1)], vec![floored]).validate();
-
-        assert!(has(&errors, "Curve for 'cpu', floor 1: no zone with id 'typo'"));
-        assert!(has(&errors, "Curve for 'cpu', floor 1: points must be sorted"));
-        assert!(has(&errors, "Curve for 'cpu', floor 2: both sensor_ids and zones are empty"));
-        assert!(has(&errors, "Curve for 'cpu', floor 2: every point needs"));
-    }
-
-    #[test]
-    fn parses_floors_as_an_array_of_tables_under_a_curve() {
-        let config = Config::parse(
-            r#"
-            [[zones]]
-            id = "four-bay"
-            sensor_ids = ["drive:naa.1"]
-
-            [[channels]]
-            id = "cage"
-            chip_name = "nct6798"
-            index = 1
-
-            [[curves]]
-            fan_channel_id = "cage"
-            sensor_ids = ["drive:*"]
-            points = [[30, 30], [40, 60]]
-
-            [[curves.floors]]
-            zones = ["four-bay"]
-            points = [[45, 30], [55, 100]]
-            "#,
-        )
-        .unwrap();
-
-        assert_eq!(config.curves[0].floors.len(), 1);
-        assert_eq!(config.curves[0].floors[0].zones, vec!["four-bay"]);
-        assert!(config.validate().is_empty());
-
-        // Hysteresis and fail-safe belong to the curve; a floor can't set its own.
-        let floor_with_hysteresis =
-            "[[curves]]\nfan_channel_id = \"a\"\npoints = []\n[[curves.floors]]\npoints = []\nhysteresis_celsius = 1";
-        assert!(Config::parse(floor_with_hysteresis).is_err());
     }
 
     /// The dashboard in CT 203 reads the socket as its `dashboard` group. A deploy config

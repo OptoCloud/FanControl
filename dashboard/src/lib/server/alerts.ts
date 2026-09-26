@@ -54,7 +54,7 @@ export function conditionsIn(snapshot: Snapshot, knownSensorIds: ReadonlySet<str
 		if (!sensor.isAvailable && sensor.category !== 'drive') {
 			conditions.set(`sensor-unavailable:${sensor.id}`, {
 				severity: 'warning',
-				message: `Sensor '${sensor.id}' (${sensor.label}) is unreadable. Curves that name it run at their fail-safe floor.`,
+				message: `Sensor '${sensor.id}' (${sensor.label}) is unreadable. Curves that name it run at no less than their fail-safe duty.`,
 				cleared: `Sensor '${sensor.id}' is readable again.`
 			});
 		}

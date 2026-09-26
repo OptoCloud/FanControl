@@ -51,7 +51,7 @@ timeout_secs = 60
 #    and exhaust, but the two stacks don't share a path to them. The fans sit behind the
 #    8-bay stack (right), a straight run. The PSU sits behind the 4-bay stack (left), so
 #    its air turns around the PSU face first, and extra duty mostly goes down the easy
-#    path into the 8-bay. So the 8-bay sets the speed and the 4-bay is a floor under it.
+#    path into the 8-bay. The hottest drive in either stack still sets the speed.
 #  - Top: motherboard, CPU, GPU, the LSI HBA and the two Samsung 870 EVO SSDs, bolted to
 #    the case wall. One intake blows across the SSD/LSI/GPU side, another onto the CPU.
 #    lsi-cooling is not a case fan: it is on the HBA's own shroud.
@@ -122,9 +122,7 @@ minimum_duty_percent = 30
 
 # points are [temperature_celsius, duty_percent], ascending. The hottest of sensor_ids
 # drives the fan; "drive:*" means every drive. fail_safe_duty_percent applies when every
-# sensor is unreadable, and is a floor when only some explicitly named one is.
-# [[curves.floors]] adds an input with its own points that can only raise the duty: the
-# fan runs at the highest of the curve and its floors, each with its own hysteresis.
+# sensor is unreadable, and is the minimum when only some explicitly named one is.
 
 [[curves]]
 fan_channel_id = "cpu-cooler-front"
@@ -157,14 +155,9 @@ sensor_ids = ["hba"]
 points = [[45, 35], [55, 50], [65, 75], [75, 100]]
 fail_safe_duty_percent = 80
 
+# The hottest of all eleven HDDs, both stacks, sets the speed.
 [[curves]]
 fan_channel_id = "drive-cage"
-zones = ["eight-bay"]
+zones = ["eight-bay", "four-bay"]
 points = [[28, 30], [33, 45], [38, 65], [43, 90], [48, 100]]
 fail_safe_duty_percent = 80
-
-# Sits at the channel minimum until a 4-bay drive reaches 45C (five days of history
-# peaked at 40C), reaching 100% at 55C, under the ~60C the drives are rated for.
-[[curves.floors]]
-zones = ["four-bay"]
-points = [[45, 30], [50, 65], [55, 100]]

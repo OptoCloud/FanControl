@@ -53,7 +53,7 @@ pub struct FanChannel {
     /// hwmon chip directory containing this pwmN/fanN pair.
     pub chip_dir: String,
     pub index: u32,
-    /// Floor below which this fan stalls; the curve result is never allowed under it.
+    /// Duty below which this fan stalls; the curve result is never allowed under it.
     pub minimum_duty_percent: u8,
 }
 
