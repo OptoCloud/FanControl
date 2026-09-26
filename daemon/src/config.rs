@@ -27,6 +27,10 @@ pub struct Config {
     /// Where sysfs is mounted. Only ever changed to run the daemon against a fake tree
     /// (integration tests, trying a config on a machine without the hardware).
     pub sysfs_root: String,
+    /// Where udev keeps its by-path links. A drive's port id is the shortest link here that
+    /// points at it: a fixed physical location (controller PCI address plus port or phy),
+    /// unlike the drive's WWN, which follows the disk wherever it is plugged in.
+    pub disk_by_path_dir: String,
     pub api: ApiConfig,
     pub gpu: GpuConfig,
     pub hba: HbaConfig,
@@ -43,6 +47,7 @@ impl Default for Config {
             deadman_timeout_secs: 30.0,
             sensor_rescan_interval_secs: 30.0,
             sysfs_root: "/sys".to_owned(),
+            disk_by_path_dir: "/dev/disk/by-path".to_owned(),
             api: ApiConfig::default(),
             gpu: GpuConfig::default(),
             hba: HbaConfig::default(),
@@ -166,10 +171,15 @@ fn default_minimum_duty() -> i64 {
 /// group. Zones exist because a sensor's *kind* doesn't say where it sits: two SSDs may
 /// be `drive:*` sensors but live next to the expansion cards, nowhere near the drive cage.
 ///
-/// Membership is explicit ids plus "prefix:*" wildcards, with one rule: a sensor named
-/// explicitly in any zone is claimed by that zone and left out of every other zone's
-/// wildcard. So `drive:*` in the drive-bay zone stops covering an SSD the moment that SSD
-/// is listed in another zone.
+/// A member is a sensor id ("cpu", "drive:naa.5000c500bae40598") or a drive's port, written
+/// "port:" plus its /dev/disk/by-path name ("port:pci-0000:01:00.1-ata-3"). Zones describe
+/// airflow at a location, so ports are the right key for them: a port stays with the bay,
+/// while a WWN follows the disk if it is moved or swapped.
+///
+/// Any member ending in "*" is a prefix wildcard ("drive:*", "port:pci-0000:03:00.0-sas-*").
+/// One rule joins them: a member named explicitly in any zone is claimed by that zone and
+/// left out of every other zone's wildcards, so "drive:*" stops covering a drive the moment
+/// its port or WWN is listed in another zone.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ZoneConfig {
@@ -191,10 +201,31 @@ pub struct CurveConfig {
     pub sensor_ids: Vec<String>,
     /// [temperature_celsius, duty_percent] pairs, ascending by temperature.
     pub points: Vec<(f64, i64)>,
+    /// Further inputs that can only raise this fan's duty, never set it. Absent means none,
+    /// and the curve behaves exactly as it did before floors existed.
+    #[serde(default)]
+    pub floors: Vec<FloorConfig>,
     #[serde(default = "default_hysteresis")]
     pub hysteresis_celsius: f64,
     #[serde(default = "default_fail_safe")]
     pub fail_safe_duty_percent: i64,
+}
+
+/// A separate input with its own points, for sensors a fan does cool but whose airflow
+/// path it barely controls. The fan runs at the highest of the curve's own duty and every
+/// floor's, so a floor whose points start at or below the channel minimum contributes
+/// nothing until its sensors get hot. On orion: the 4-bay stack exhausts around the PSU
+/// while the fans sit behind the 8-bay, so extra duty mostly cools the 8-bay; letting the
+/// 4-bay set the speed buys little for it and pins the fan high for everyone.
+/// Hysteresis and fail-safe come from the curve.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FloorConfig {
+    #[serde(default)]
+    pub zones: Vec<String>,
+    #[serde(default)]
+    pub sensor_ids: Vec<String>,
+    pub points: Vec<(f64, i64)>,
 }
 
 fn default_hysteresis() -> f64 {
@@ -306,7 +337,7 @@ impl Config {
         // contradiction, not a tie to break.
         let mut claims: Vec<(&str, Vec<&str>)> = Vec::new();
         for zone in &self.zones {
-            for id in zone.sensor_ids.iter().filter(|id| !id.ends_with(":*")) {
+            for id in zone.sensor_ids.iter().filter(|id| !is_wildcard(id)) {
                 match claims.iter_mut().find(|(sensor, _)| *sensor == id.as_str()) {
                     Some((_, zones)) => zones.push(&zone.id),
                     None => claims.push((id, vec![&zone.id])),
@@ -327,24 +358,16 @@ impl Config {
                 errors.push(format!("{name}: no fan channel with that id exists."));
             }
 
-            if curve.sensor_ids.is_empty() && curve.zones.is_empty() {
-                errors.push(format!("{name}: both sensor_ids and zones are empty; it needs at least one input."));
-            }
-
-            for zone in curve.zones.iter().filter(|z| !zone_ids.contains(z.as_str())) {
-                errors.push(format!("{name}: no zone with id '{zone}' exists."));
-            }
-
-            if curve.points.is_empty() {
-                errors.push(format!("{name}: points is empty."));
-            }
-
-            if curve.points.iter().any(|(temperature, duty)| !temperature.is_finite() || !is_duty(*duty)) {
-                errors.push(format!("{name}: every point needs a finite temperature and a duty of 0-100."));
-            }
-
-            if curve.points.windows(2).any(|pair| pair[1].0 < pair[0].0) {
-                errors.push(format!("{name}: points must be sorted by ascending temperature."));
+            validate_input(&mut errors, &name, &curve.zones, &curve.sensor_ids, &curve.points, &zone_ids);
+            for (index, floor) in curve.floors.iter().enumerate() {
+                validate_input(
+                    &mut errors,
+                    &format!("{name}, floor {}", index + 1),
+                    &floor.zones,
+                    &floor.sensor_ids,
+                    &floor.points,
+                    &zone_ids,
+                );
             }
 
             if !is_duty(curve.fail_safe_duty_percent) {
@@ -372,6 +395,42 @@ impl Config {
 
         errors
     }
+}
+
+/// The checks shared by a curve's own input and each of its floors.
+fn validate_input(
+    errors: &mut Vec<String>,
+    name: &str,
+    zones: &[String],
+    sensor_ids: &[String],
+    points: &[(f64, i64)],
+    zone_ids: &HashSet<&str>,
+) {
+    if sensor_ids.is_empty() && zones.is_empty() {
+        errors.push(format!("{name}: both sensor_ids and zones are empty; it needs at least one input."));
+    }
+
+    for zone in zones.iter().filter(|z| !zone_ids.contains(z.as_str())) {
+        errors.push(format!("{name}: no zone with id '{zone}' exists."));
+    }
+
+    if points.is_empty() {
+        errors.push(format!("{name}: points is empty."));
+    }
+
+    if points.iter().any(|(temperature, duty)| !temperature.is_finite() || !is_duty(*duty)) {
+        errors.push(format!("{name}: every point needs a finite temperature and a duty of 0-100."));
+    }
+
+    if points.windows(2).any(|pair| pair[1].0 < pair[0].0) {
+        errors.push(format!("{name}: points must be sorted by ascending temperature."));
+    }
+}
+
+/// "drive:*", "port:pci-0000:03:00.0-sas-*": matches every sensor or port key with the
+/// text before the "*" as its prefix.
+pub fn is_wildcard(id: &str) -> bool {
+    id.ends_with('*')
 }
 
 fn is_duty(percent: i64) -> bool {
@@ -404,6 +463,7 @@ mod tests {
             zones: Vec::new(),
             sensor_ids: vec!["cpu".to_owned()],
             points: vec![(30.0, 30), (70.0, 100)],
+            floors: Vec::new(),
             hysteresis_celsius: 3.0,
             fail_safe_duty_percent: 100,
         }
@@ -520,6 +580,68 @@ mod tests {
         assert!(has(&errors, "Zone id 'a' is defined 2 times"));
         assert!(has(&errors, "Zone 'a': sensor_ids is empty"));
         assert!(has(&errors, "Sensor 'drive:naa.1' is named explicitly in zones 'a', 'b'"));
+    }
+
+    #[test]
+    fn validates_each_floor_like_a_curve_input() {
+        let mut floored = curve("cpu");
+        floored.floors = vec![
+            FloorConfig { zones: vec!["typo".to_owned()], sensor_ids: Vec::new(), points: vec![(50.0, 60), (40.0, 30)] },
+            FloorConfig { zones: Vec::new(), sensor_ids: Vec::new(), points: vec![(50.0, 101)] },
+        ];
+
+        let errors = config(vec![channel("cpu", 1)], vec![floored]).validate();
+
+        assert!(has(&errors, "Curve for 'cpu', floor 1: no zone with id 'typo'"));
+        assert!(has(&errors, "Curve for 'cpu', floor 1: points must be sorted"));
+        assert!(has(&errors, "Curve for 'cpu', floor 2: both sensor_ids and zones are empty"));
+        assert!(has(&errors, "Curve for 'cpu', floor 2: every point needs"));
+    }
+
+    #[test]
+    fn parses_floors_as_an_array_of_tables_under_a_curve() {
+        let config = Config::parse(
+            r#"
+            [[zones]]
+            id = "four-bay"
+            sensor_ids = ["drive:naa.1"]
+
+            [[channels]]
+            id = "cage"
+            chip_name = "nct6798"
+            index = 1
+
+            [[curves]]
+            fan_channel_id = "cage"
+            sensor_ids = ["drive:*"]
+            points = [[30, 30], [40, 60]]
+
+            [[curves.floors]]
+            zones = ["four-bay"]
+            points = [[45, 30], [55, 100]]
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.curves[0].floors.len(), 1);
+        assert_eq!(config.curves[0].floors[0].zones, vec!["four-bay"]);
+        assert!(config.validate().is_empty());
+
+        // Hysteresis and fail-safe belong to the curve; a floor can't set its own.
+        let floor_with_hysteresis =
+            "[[curves]]\nfan_channel_id = \"a\"\npoints = []\n[[curves.floors]]\npoints = []\nhysteresis_celsius = 1";
+        assert!(Config::parse(floor_with_hysteresis).is_err());
+    }
+
+    /// The dashboard in CT 203 reads the socket as its `dashboard` group. A deploy config
+    /// that drops these still passes every check run as root on the host, while the
+    /// dashboard silently loses access.
+    #[test]
+    fn the_orion_config_gives_the_socket_to_the_dashboard_container() {
+        let config = Config::parse(include_str!("../../deploy/fancontrol.toml")).unwrap();
+
+        assert_eq!((config.api.socket_uid, config.api.socket_gid), (Some(100000), Some(102000)));
+        assert_eq!(config.api.socket_mode_bits(), Some(0o660));
     }
 
     #[test]

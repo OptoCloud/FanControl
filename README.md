@@ -54,21 +54,33 @@ life as a .NET daemon; that implementation is in the git history.)
   the curve still runs but that fail-safe becomes its floor.
 - **A sensor's kind doesn't decide which fan sees it; its physical location
   does.** `drive:*` is a sensor *category*, not a location: on this board two
-  SSDs sit screwed to the case in the top-left compartment with the LSI card,
-  GPU and CPU, nowhere near the drive cage. `zones` group sensor ids by where
-  they physically sit, and a curve names zones (`zones = [...]`) instead of,
-  or alongside, raw `sensor_ids`. A sensor named explicitly in one zone's
-  `sensor_ids` is claimed by it and excluded from every other zone's `drive:*`
-  wildcard, so the drive-cage curve's zone stops seeing the SSDs the moment
-  they're listed in the component-bay zone instead, with no drive-cage config
-  change needed.
+  SSDs sit screwed to the case in the top compartment with the LSI card, GPU
+  and CPU, nowhere near the drive cage. `zones` group sensors by the airflow
+  they sit in, and a curve names zones (`zones = [...]`) instead of, or
+  alongside, raw `sensor_ids`.
+- **A drive has two keys: the disk and the bay.** Its sensor id is its WWN
+  (`drive:naa.5000c500...`), which follows the disk wherever it's plugged in:
+  right for health and history. Its `port` is its `/dev/disk/by-path` name
+  (`pci-0000:01:00.1-ata-3`, `pci-0000:03:00.0-sas-phy0-lun-0`), which stays
+  with the bay whatever disk is in it: right for cooling. Zones name bays by
+  port (`port:pci-0000:01:00.1-ata-3`), so a swapped disk lands in the right
+  zone with no config change. by-path carries the controller's PCI address,
+  so two controllers' "port 3" never collide.
+- **A floor lets a sensor raise a fan without setting it.** A curve's
+  `[[curves.floors]]` are extra inputs with their own points; the fan runs at
+  the highest of the curve and its floors. On orion the 4-bay stack exhausts
+  around the PSU while the fans sit behind the 8-bay, so extra duty mostly
+  cools the 8-bay: the 8-bay sets the speed, and the 4-bay only raises it
+  once one of its drives is genuinely hot.
 - **One failing channel doesn't take the others down.** A header whose sysfs
   write fails is handed back to automatic control and retried every poll,
   while the remaining channels keep being driven.
 - **Config is validated before any fan is touched.** Out-of-range duties,
   unsorted curve points, a curve naming an unknown channel, or a channel with
   no curve (or two) all refuse to start with every problem listed.
-  `fancontrol --check` does only that and exits.
+  `fancontrol --check` does only that, then (on the target machine) lists what
+  every curve and floor would read and warns about any member that matches
+  nothing there, and exits. It reads no temperature and touches no fan.
 - **Fan stalls are detected.** A header reading 0 RPM for several consecutive
   polls while being driven is logged and flagged as `stalled`.
 - **HBA temperature is read via a raw ioctl.** `mpt3sas` has no hwmon
@@ -120,15 +132,16 @@ capped by `api.max_clients`; past that, new ones get `503`.
   "controlLoopHealthy": true,
   "sensors": [
     { "id": "cpu", "category": "cpu", "label": "Tctl", "celsiusOrNull": 38.25, "isAvailable": true, "sourcePath": "..." },
-    { "id": "drive:naa.5000c500...", "category": "drive", "...": "..." }
+    { "id": "drive:naa.5000c500...", "category": "drive", "port": "pci-0000:01:00.1-ata-3", "...": "..." }
     // category: cpu, boardAmbient, drive, gpu, memory, hba
+    // port: drives only, the /dev/disk/by-path name of where it's plugged in; null otherwise
   ],
   "fans": [
     { "id": "drive-cage", "dutyPercent": 65, "rpm": 1211, "mode": "manual", "stalled": false }
     // mode: disabled, manual, thermalCruise, speedCruise, smartFanIII, smartFanIV, or null if unreadable
   ],
   "driveHealth": [
-    { "deviceName": "naa.5000c500...", "passed": true, "reallocatedSectorCount": 0, "pendingSectorCount": 0,
+    { "deviceName": "naa.5000c500...", "port": "pci-0000:01:00.1-ata-3", "passed": true, "reallocatedSectorCount": 0, "pendingSectorCount": 0,
       "powerOnHours": 8760, "isAvailable": true, "asOf": "2026-09-21T23:00:38.412Z", "sourcePath": "/dev/sdc" }
     // Exactly what the last SMART poll saw. A sleeping drive is not woken, so it shows
     // isAvailable=false with nulls: keep its previous values on the consumer side.
@@ -211,29 +224,40 @@ journalctl -u fancontrol -f
 wiring. Leave both empty to run monitor-only, which never writes to any `pwmN`
 file.
 
-`zones` (optional) group sensor ids by physical location so a curve can react
-to "everything in this part of the case" instead of listing chip-level
-categories that don't say where a device actually sits. On orion, the two
-Samsung 870 EVO SSDs are `drivetemp` sensors like every HDD but live in the
-component compartment, not the drive cage, so they're pulled out of the
-drive-bay zone's `drive:*` wildcard into their own zone:
+`zones` (optional) group sensors by the airflow they sit in, so a curve can
+react to "this part of the case" instead of listing chip-level categories
+that don't say where a device actually sits. Members are sensor ids or drive
+ports, and anything ending in `*` is a prefix wildcard. On orion:
 
 ```toml
+# The LSI's eight phys: the 8-bay stack.
 [[zones]]
-id = "drive-bay"
-sensor_ids = ["drive:*"]
+id = "eight-bay"
+sensor_ids = ["port:pci-0000:03:00.0-sas-*"]
 
+# The 4-bay stack: scratch, and the two hot spares.
 [[zones]]
-id = "component-bay"
-sensor_ids = ["hba", "drive:naa.5002538...ssd1", "drive:naa.5002538...ssd2"]
+id = "four-bay"
+sensor_ids = ["port:pci-0000:01:00.1-ata-3", "port:pci-0000:01:00.1-ata-6", "port:pci-0000:01:00.1-ata-5"]
+
+[[curves]]
+fan_channel_id = "drive-cage"
+zones = ["eight-bay"]
+points = [[28, 30], [33, 45], [38, 65], [43, 90], [48, 100]]
+
+[[curves.floors]]
+zones = ["four-bay"]
+points = [[45, 30], [50, 65], [55, 100]]
 ```
 
-A curve then writes `zones = ["drive-bay"]` instead of `sensor_ids =
-["drive:*"]`, and gets every drive *except* the two SSDs automatically:
-naming a sensor explicitly in `component-bay` removes it from `drive-bay`'s
-wildcard, wherever `drive-bay` is used. Find a drive's WWN with
-`ls -l /dev/disk/by-id/ | grep ata-Samsung_SSD` (or `by-id/wwn-*`) on the
-host; it's the same id the `/status` API reports as `drive:<wwn>`.
+A member named explicitly in one zone is claimed by it and left out of every
+other zone's wildcards, so a zone written as `drive:*` stops covering a drive
+the moment its port or WWN is listed in another zone. A port named explicitly
+with no drive on it counts as an unreadable sensor (the curve's fail-safe
+becomes a floor), so list only filled bays. `ls -l /dev/disk/by-path/` on the
+host lists every port; the daemon uses the shortest link for each disk,
+ignoring partitions. Run `--check` on the host after editing zones: it prints
+exactly which drives each curve and floor picked up.
 
 `fancontrol.service` runs as root (sysfs PWM attributes are root-owned, mode
 644). On stop it relies on `TimeoutStopSec=30` + `SIGTERM` so the daemon
@@ -295,7 +319,11 @@ The dashboard (`dashboard/`) is a SvelteKit app run under Node in an
 unprivileged LXC. It keeps the one connection to the daemon's socket, writes
 history to Postgres (10s samples for 7 days, 1-minute rollups forever), fans
 live data out to browsers over SSE, and owns alerting (stalled fans, unreadable
-or vanished sensors, SMART changes, daemon outages; optional ntfy push). See
+or vanished sensors, SMART changes, daemon outages; optional ntfy push). A
+drive's temperature is stored twice: as `drive:<wwn>`, the disk's own trend
+wherever it's plugged in, and as `port:<by-path>`, the bay's trend whichever
+disk is in it. `bay_occupants` records which disk sat in which bay and when,
+and the drive table switches between the two views. See
 `dashboard/deploy/` for the unit and env template, `dashboard/deploy/package.sh`
 to build the deployable tarball, and `dashboard/scripts/mock-daemon.mjs` plus
 `dashboard/docker-compose.dev.yml` for developing without the hardware.

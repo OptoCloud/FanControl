@@ -8,6 +8,12 @@
 //! hardware for both native-SATA (libata) and HBA-attached (mpt3sas) drives. The WWN is
 //! burned into the drive, so it survives a port change: exactly the property a sensor id
 //! that history gets keyed on needs.
+//!
+//! A drive also carries its port: the /dev/disk/by-path name of where it is plugged in
+//! ("pci-0000:01:00.1-ata-3", "pci-0000:03:00.0-sas-phy0-lun-0"). That is the opposite
+//! property, fixed to the bay whatever disk sits in it, and it is what cooling cares about:
+//! zones name bays by port. Two keys because there are two questions. The WWN answers "how
+//! is this disk doing" (health, history); the port answers "how is this spot doing" (airflow).
 
 use crate::sysfs::{self, SysFs};
 use serde::Serialize;
@@ -34,6 +40,9 @@ pub struct SensorReading {
     pub celsius_or_null: Option<f64>,
     pub source_path: String,
     pub is_available: bool,
+    /// Drives only: the by-path name of the port the drive is plugged into. Null for every
+    /// other sensor, and for a drive when no by-path link points at it.
+    pub port: Option<String>,
 }
 
 impl SensorReading {
@@ -45,7 +54,13 @@ impl SensorReading {
             celsius_or_null: celsius,
             source_path: source_path.to_owned(),
             is_available: celsius.is_some(),
+            port: None,
         }
+    }
+
+    pub fn with_port(mut self, port: Option<String>) -> Self {
+        self.port = port;
+        self
     }
 }
 
@@ -87,28 +102,39 @@ pub struct ResolvedSensor {
     /// so something that has to operate on the device right now (smartctl) can, without
     /// that name leaking into anything that tracks a drive's identity over time.
     pub device_name: Option<String>,
+    /// Drives only: the /dev/disk/by-path name of the port it is plugged into.
+    pub port: Option<String>,
 }
 
 pub struct HwmonResolver<'a> {
     sysfs: &'a dyn SysFs,
     hwmon_root: String,
     block_root: String,
+    by_path_dir: Option<String>,
 }
 
 impl<'a> HwmonResolver<'a> {
     /// `sysfs_root` is "/sys" everywhere except when running against a fake tree.
     pub fn new(sysfs: &'a dyn SysFs, sysfs_root: &str) -> Self {
-        Self { sysfs, hwmon_root: format!("{sysfs_root}/class/hwmon"), block_root: format!("{sysfs_root}/class/block") }
+        Self { sysfs, hwmon_root: format!("{sysfs_root}/class/hwmon"), block_root: format!("{sysfs_root}/class/block"), by_path_dir: None }
+    }
+
+    /// Also resolve each drive's port from the by-path links in `dir`. Without this every
+    /// port is None.
+    pub fn with_by_path_dir(mut self, dir: &str) -> Self {
+        self.by_path_dir = Some(dir.to_owned());
+        self
     }
 
     pub fn resolve(&self, specs: &[SensorSpec]) -> Vec<ResolvedSensor> {
         let chips = self.chips();
+        let links = self.by_path_dir.as_deref().map(|dir| self.sysfs.list_links(dir)).unwrap_or_default();
         let mut resolved = Vec::new();
 
         for spec in specs {
             for (path, _) in chips.iter().filter(|(_, name)| name == spec.chip_name) {
                 if spec.all_instances {
-                    resolved.extend(self.resolve_instance(spec, path));
+                    resolved.extend(self.resolve_instance(spec, path, &links));
                 } else if let Some(label) = spec.label {
                     resolved.extend(self.resolve_by_label(spec, path, label));
                 }
@@ -137,7 +163,7 @@ impl<'a> HwmonResolver<'a> {
             .collect()
     }
 
-    fn resolve_instance(&self, spec: &SensorSpec, chip_path: &str) -> Option<ResolvedSensor> {
+    fn resolve_instance(&self, spec: &SensorSpec, chip_path: &str, links: &[(String, String)]) -> Option<ResolvedSensor> {
         // drivetemp/jc42 instances expose a single temp1_input per hwmon directory.
         let input_path = sysfs::join(&[chip_path, "temp1_input"]);
         if !self.sysfs.file_exists(&input_path) {
@@ -145,9 +171,15 @@ impl<'a> HwmonResolver<'a> {
         }
 
         let device_name = self.backing_device_name(chip_path);
+        let port = device_name.as_deref().and_then(|device| port_of(device, links));
         let stable_name = match &device_name {
-            // A real block device (a drive): key it by WWN, not the live sdX name.
-            Some(device) => self.sysfs.read(&sysfs::join(&[&self.block_root, device, "device", "wwid"])).unwrap_or_else(|| device.clone()),
+            // A real block device (a drive): key it by WWN, not the live sdX name. Failing
+            // that the port, which at least doesn't reorder across reboots the way sdX does.
+            Some(device) => self
+                .sysfs
+                .read(&sysfs::join(&[&self.block_root, device, "device", "wwid"]))
+                .or_else(|| port.clone())
+                .unwrap_or_else(|| device.clone()),
             // No backing block device (jc42 DIMM sensors): nothing more stable exists
             // than the hwmon directory name.
             None => sysfs::file_name(chip_path).to_owned(),
@@ -159,6 +191,7 @@ impl<'a> HwmonResolver<'a> {
             label: stable_name,
             temp_input_path: input_path,
             device_name,
+            port,
         })
     }
 
@@ -178,6 +211,7 @@ impl<'a> HwmonResolver<'a> {
                 label,
                 temp_input_path: input_path,
                 device_name: None,
+                port: None,
             })
         })
     }
@@ -188,12 +222,24 @@ impl<'a> HwmonResolver<'a> {
     }
 }
 
+/// The by-path name for a block device: the shortest link pointing at it, partitions
+/// excluded. udev can publish more than one spelling for the same port (newer versions add
+/// "ata-3.0" beside "ata-3"); the shortest is the stable, historical one.
+fn port_of(device: &str, links: &[(String, String)]) -> Option<String> {
+    links
+        .iter()
+        .filter(|(name, target)| target == device && !name.contains("-part"))
+        .map(|(name, _)| name)
+        .min_by(|a, b| a.len().cmp(&b.len()).then(a.cmp(b)))
+        .cloned()
+}
+
 /// Reads the current value of an already-resolved hwmon sensor (millidegrees in sysfs).
 pub fn read_sensor(sysfs: &dyn SysFs, sensor: &ResolvedSensor) -> SensorReading {
     let celsius =
         sysfs.read(&sensor.temp_input_path).and_then(|raw| raw.parse::<i64>().ok()).map(|millidegrees| millidegrees as f64 / 1000.0);
 
-    SensorReading::new(&sensor.id, sensor.category, &sensor.label, celsius, &sensor.temp_input_path)
+    SensorReading::new(&sensor.id, sensor.category, &sensor.label, celsius, &sensor.temp_input_path).with_port(sensor.port.clone())
 }
 
 #[cfg(test)]
@@ -249,6 +295,58 @@ mod tests {
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].id, "drive:sda");
         assert_eq!(resolved[0].device_name.as_deref(), Some("sda"));
+    }
+
+    const BY_PATH: &str = "/dev/disk/by-path";
+
+    fn two_drives() -> FakeSysFs {
+        FakeSysFs::new()
+            .with_file("/sys/class/hwmon/hwmon5/name", "drivetemp")
+            .with_file("/sys/class/hwmon/hwmon5/temp1_input", "31000")
+            .with_dir("/sys/class/hwmon/hwmon5/device/block/sdk")
+            .with_file("/sys/class/block/sdk/device/wwid", "naa.5000c500bae40598")
+            .with_file("/sys/class/hwmon/hwmon6/name", "drivetemp")
+            .with_file("/sys/class/hwmon/hwmon6/temp1_input", "33000")
+            .with_dir("/sys/class/hwmon/hwmon6/device/block/sdb")
+            .with_file("/sys/class/block/sdb/device/wwid", "naa.5000c500fa475042")
+            .with_link(BY_PATH, "pci-0000:01:00.1-ata-3", "sdk")
+            .with_link(BY_PATH, "pci-0000:01:00.1-ata-3.0", "sdk")
+            .with_link(BY_PATH, "pci-0000:01:00.1-ata-3-part1", "sdk1")
+            .with_link(BY_PATH, "pci-0000:03:00.0-sas-phy0-lun-0", "sdb")
+            .with_link(BY_PATH, "pci-0000:03:00.0-sas-phy0-lun-0-part1", "sdb1")
+    }
+
+    #[test]
+    fn a_drive_carries_its_port_beside_its_wwn() {
+        let sysfs = two_drives();
+
+        let resolved = HwmonResolver::new(&sysfs, "/sys").with_by_path_dir(BY_PATH).resolve(&[DRIVE_SPEC]);
+
+        let port = |id: &str| resolved.iter().find(|r| r.id == id).and_then(|r| r.port.clone());
+        // The shortest link wins over udev's newer "ata-3.0" spelling; partitions never count.
+        assert_eq!(port("drive:naa.5000c500bae40598").as_deref(), Some("pci-0000:01:00.1-ata-3"));
+        assert_eq!(port("drive:naa.5000c500fa475042").as_deref(), Some("pci-0000:03:00.0-sas-phy0-lun-0"));
+        assert_eq!(read_sensor(&sysfs, &resolved[0]).port, resolved[0].port);
+    }
+
+    #[test]
+    fn without_a_by_path_dir_ports_are_none() {
+        let resolved = HwmonResolver::new(&two_drives(), "/sys").resolve(&[DRIVE_SPEC]);
+
+        assert!(resolved.iter().all(|r| r.port.is_none()));
+    }
+
+    #[test]
+    fn a_drive_without_a_wwid_is_keyed_by_its_port_before_its_sdx_letter() {
+        let sysfs = FakeSysFs::new()
+            .with_file("/sys/class/hwmon/hwmon5/name", "drivetemp")
+            .with_file("/sys/class/hwmon/hwmon5/temp1_input", "31000")
+            .with_dir("/sys/class/hwmon/hwmon5/device/block/sdk")
+            .with_link(BY_PATH, "pci-0000:01:00.1-ata-3", "sdk");
+
+        let resolved = HwmonResolver::new(&sysfs, "/sys").with_by_path_dir(BY_PATH).resolve(&[DRIVE_SPEC]);
+
+        assert_eq!(resolved[0].id, "drive:pci-0000:01:00.1-ata-3");
     }
 
     #[test]

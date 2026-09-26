@@ -16,11 +16,23 @@ const faults = { stall: false, gpu: false, unhealthy: false };
 let reallocated = 1048;
 let driveHealthAsOf = new Date().toISOString();
 
+// orion's ports: eight on the LSI's phys, three in the 4-bay stack (ata-4 is empty), and the
+// two SSDs on ata-1 and ata-2.
+const PORTS = [
+	...Array.from({ length: 8 }, (_, phy) => `pci-0000:03:00.0-sas-phy${phy}-lun-0`),
+	'pci-0000:01:00.1-ata-3',
+	'pci-0000:01:00.1-ata-6',
+	'pci-0000:01:00.1-ata-5',
+	'pci-0000:01:00.1-ata-1',
+	'pci-0000:01:00.1-ata-2'
+];
+
 const drives = Array.from({ length: 13 }, (_, i) => ({
 	wwn: `naa.5000c500${(0xa0000000 + i * 0x1111111).toString(16)}`,
 	device: `sd${String.fromCharCode(97 + i)}`,
+	port: PORTS[i],
 	base: 30 + ((i * 7) % 9),
-	ssd: i === 3 || i === 12
+	ssd: i >= 11
 }));
 
 const fans = [
@@ -67,7 +79,7 @@ function snapshot() {
 		sensors: [
 			reading('cpu', 'cpu', 'Tctl', cpu),
 			reading('board', 'boardAmbient', 'SYSTIN', 33 + wave(2400) + noise(0.3)),
-			...drives.map((d, i) => reading(`drive:${d.wwn}`, 'drive', d.wwn, driveTemps[i])),
+			...drives.map((d, i) => ({ ...reading(`drive:${d.wwn}`, 'drive', d.wwn, driveTemps[i]), port: d.port })),
 			reading('dimm:hwmon15', 'memory', 'hwmon15', 32 + wave(1500) * 1.5),
 			reading('dimm:hwmon16', 'memory', 'hwmon16', 33 + wave(1500, 1) * 1.5),
 			reading('gpu', 'gpu', 'GPU', faults.gpu ? null : gpu),
@@ -85,6 +97,7 @@ function snapshot() {
 		}),
 		driveHealth: drives.map((d, i) => ({
 			deviceName: d.wwn,
+			port: d.port,
 			passed: true,
 			reallocatedSectorCount: i === 2 ? reallocated : 0,
 			pendingSectorCount: d.ssd ? null : 0,

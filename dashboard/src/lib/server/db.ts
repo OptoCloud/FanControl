@@ -2,7 +2,7 @@
 // no history at all, so this database is the only place any of it lives.
 
 import postgres from 'postgres';
-import type { DriveState, EventRecord, Severity, Snapshot } from '$lib/types';
+import type { DriveState, EventRecord, SensorReading, Severity, Snapshot } from '$lib/types';
 
 export type Sql = postgres.Sql;
 
@@ -18,6 +18,11 @@ export function connect(databaseUrl: string): Sql {
  * Raw samples are narrow (one row per sensor per sample) so a sensor appearing or vanishing
  * needs no schema change. They are only kept for a few days; the *_minutes tables are the
  * long-term record and what every chart range beyond an hour reads from.
+ *
+ * A drive's temperature is stored twice, under two keys: "drive:<wwn>" follows the disk (its
+ * own trend, wherever it is plugged in) and "port:<by-path>" follows the bay (the trend of
+ * that spot in the case, whichever disk is in it). bay_occupants records which disk was in
+ * which bay and when, so the two can be told apart after a swap.
  */
 export async function migrate(sql: Sql): Promise<void> {
 	await sql`
@@ -96,6 +101,15 @@ export async function migrate(sql: Sql): Promise<void> {
 			power_on_hours bigint
 		)`;
 	await sql`create index if not exists drive_health_history_wwn_ts on drive_health_history (wwn, ts desc)`;
+	await sql`alter table drives add column if not exists port text`;
+	await sql`
+		create table if not exists bay_occupants (
+			port text not null,
+			wwn text not null,
+			first_seen timestamptz not null default now(),
+			last_seen timestamptz not null default now(),
+			primary key (port, wwn)
+		)`;
 	await sql`
 		create table if not exists events (
 			id bigserial primary key,
@@ -112,7 +126,7 @@ export async function insertSamples(sql: Sql, snapshot: Snapshot): Promise<void>
 
 	const sensorRows = snapshot.sensors
 		.filter((sensor) => sensor.celsiusOrNull !== null)
-		.map((sensor) => ({ ts, sensor_id: sensor.id, celsius: sensor.celsiusOrNull as number }));
+		.flatMap((sensor) => seriesIdsOf(sensor).map((id) => ({ ts, sensor_id: id, celsius: sensor.celsiusOrNull as number })));
 	if (sensorRows.length > 0) {
 		await sql`insert into sensor_samples ${sql(sensorRows, 'ts', 'sensor_id', 'celsius')} on conflict do nothing`;
 	}
@@ -123,13 +137,30 @@ export async function insertSamples(sql: Sql, snapshot: Snapshot): Promise<void>
 	}
 }
 
-/** Records which sensors and fans exist and when they were last seen. */
+/** The history keys one reading is stored under: its own id, plus its bay for a drive with a known port. */
+export function seriesIdsOf(sensor: SensorReading): string[] {
+	return sensor.port ? [sensor.id, `port:${sensor.port}`] : [sensor.id];
+}
+
+/** Records which sensors, bays and fans exist, when they were last seen, and which disk is in which bay. */
 export async function touchInventory(sql: Sql, snapshot: Snapshot): Promise<void> {
-	const sensorRows = snapshot.sensors.map((sensor) => ({ id: sensor.id, category: sensor.category, label: sensor.label }));
+	const sensorRows = snapshot.sensors.flatMap((sensor) => [
+		{ id: sensor.id, category: sensor.category, label: sensor.label },
+		...(sensor.port ? [{ id: `port:${sensor.port}`, category: 'bay', label: sensor.port }] : [])
+	]);
 	if (sensorRows.length > 0) {
 		await sql`
 			insert into sensors ${sql(sensorRows, 'id', 'category', 'label')}
 			on conflict (id) do update set category = excluded.category, label = excluded.label, last_seen = now()`;
+	}
+
+	const occupantRows = snapshot.sensors
+		.filter((sensor) => sensor.category === 'drive' && sensor.port)
+		.map((sensor) => ({ port: sensor.port as string, wwn: sensor.id.replace(/^drive:/, '') }));
+	if (occupantRows.length > 0) {
+		await sql`
+			insert into bay_occupants ${sql(occupantRows, 'port', 'wwn')}
+			on conflict (port, wwn) do update set last_seen = now()`;
 	}
 
 	const fanRows = snapshot.fans.map((fan) => ({ id: fan.id }));
@@ -170,9 +201,10 @@ export async function pruneRawSamples(sql: Sql, olderThan: Date): Promise<void> 
 }
 
 export async function loadDrives(sql: Sql): Promise<DriveState[]> {
-	const rows = await sql`select wwn, passed, reallocated, pending, power_on_hours, source_path, as_of from drives order by wwn`;
+	const rows = await sql`select wwn, port, passed, reallocated, pending, power_on_hours, source_path, as_of from drives order by wwn`;
 	return rows.map((row) => ({
 		wwn: row.wwn,
+		port: row.port,
 		passed: row.passed,
 		reallocatedSectorCount: toNumber(row.reallocated),
 		pendingSectorCount: toNumber(row.pending),
@@ -185,11 +217,11 @@ export async function loadDrives(sql: Sql): Promise<DriveState[]> {
 /** Stores a drive's new last-good state, and a history row if `changed` (anything but power-on hours moved). */
 export async function saveDrive(sql: Sql, drive: DriveState, changed: boolean): Promise<void> {
 	await sql`
-		insert into drives (wwn, passed, reallocated, pending, power_on_hours, source_path, as_of)
-		values (${drive.wwn}, ${drive.passed}, ${drive.reallocatedSectorCount}, ${drive.pendingSectorCount},
+		insert into drives (wwn, port, passed, reallocated, pending, power_on_hours, source_path, as_of)
+		values (${drive.wwn}, ${drive.port}, ${drive.passed}, ${drive.reallocatedSectorCount}, ${drive.pendingSectorCount},
 			${drive.powerOnHours}, ${drive.sourcePath}, ${drive.asOf})
 		on conflict (wwn) do update set
-			passed = excluded.passed, reallocated = excluded.reallocated, pending = excluded.pending,
+			port = excluded.port, passed = excluded.passed, reallocated = excluded.reallocated, pending = excluded.pending,
 			power_on_hours = excluded.power_on_hours, source_path = excluded.source_path, as_of = excluded.as_of`;
 
 	if (changed) {

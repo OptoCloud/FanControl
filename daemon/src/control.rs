@@ -21,6 +21,7 @@ pub struct ControlLoop {
     fans: Vec<(FanChannel, FanCurve)>,
     rescan_interval: Duration,
     sysfs_root: String,
+    disk_by_path_dir: String,
     engine: CurveEngine,
     stall_detector: StallDetector,
     conditions: ConditionTracker,
@@ -39,7 +40,7 @@ impl ControlLoop {
     /// present: a fan channel with no backing chip is something to refuse to start over
     /// (typically the module isn't loaded yet, which a restart a few seconds later fixes).
     pub fn new(config: &Config, sysfs: Arc<dyn SysFs>, controller: Arc<dyn FanController>) -> Result<Self, String> {
-        let resolver = HwmonResolver::new(&*sysfs, &config.sysfs_root);
+        let resolver = HwmonResolver::new(&*sysfs, &config.sysfs_root).with_by_path_dir(&config.disk_by_path_dir);
 
         let channels = config
             .channels
@@ -74,6 +75,7 @@ impl ControlLoop {
             fans,
             rescan_interval: Duration::from_secs_f64(config.sensor_rescan_interval_secs),
             sysfs_root: config.sysfs_root.clone(),
+            disk_by_path_dir: config.disk_by_path_dir.clone(),
             engine: CurveEngine::default(),
             stall_detector: StallDetector::new(STALL_POLLS),
             conditions: ConditionTracker::default(),
@@ -151,7 +153,8 @@ impl ControlLoop {
             return;
         }
 
-        let current = HwmonResolver::new(&*self.sysfs, &self.sysfs_root).resolve(&DEFAULT_WHITELIST);
+        let current =
+            HwmonResolver::new(&*self.sysfs, &self.sysfs_root).with_by_path_dir(&self.disk_by_path_dir).resolve(&DEFAULT_WHITELIST);
 
         match &self.sensors {
             None => {
@@ -243,6 +246,7 @@ mod tests {
                     zones: Vec::new(),
                     sensor_ids: sensor_ids.iter().map(|s| (*s).to_owned()).collect(),
                     points: vec![(30.0, 20), (50.0, 50), (70.0, 100)],
+                    floors: Vec::new(),
                     hysteresis_celsius: 3.0,
                     fail_safe_duty_percent: 80,
                 })

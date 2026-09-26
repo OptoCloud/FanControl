@@ -26,7 +26,9 @@ mod sysfs;
 
 use config::Config;
 use control::ControlLoop;
+use curve::{FanCurve, Member};
 use fans::{FanSafetyGuard, SysfsFanController};
+use sensors::{DEFAULT_WHITELIST, HwmonResolver, SensorCategory, SensorReading};
 use status::{Snapshot, StatusHub};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -76,6 +78,7 @@ fn run(config_path: &str, check_only: bool) -> Result<(), String> {
 
     if check_only {
         println!("{config_path}: OK ({} fan channel(s), {} curve(s))", config.channels.len(), config.curves.len());
+        report_curve_inputs(&config, &LinuxSysFs);
         return Ok(());
     }
 
@@ -157,16 +160,68 @@ fn start_status_api(_config: &Config, _hub: &Arc<StatusHub>) -> Result<(), Strin
     Ok(())
 }
 
+/// For --check: what every curve and floor would read on this machine. Resolution only
+/// lists hwmon and the by-path links: no temperature is read and no fan is touched, so a
+/// zone config can be checked against the real drives before it goes live.
+fn report_curve_inputs(config: &Config, sysfs: &dyn SysFs) {
+    let resolved = HwmonResolver::new(sysfs, &config.sysfs_root).with_by_path_dir(&config.disk_by_path_dir).resolve(&DEFAULT_WHITELIST);
+    if resolved.is_empty() {
+        println!("No hwmon sensors under {}: not on the target machine, so curve inputs are not checked.", config.sysfs_root);
+        return;
+    }
+
+    let mut present: Vec<SensorReading> = resolved
+        .iter()
+        .map(|sensor| {
+            SensorReading::new(&sensor.id, sensor.category, &sensor.label, None, &sensor.temp_input_path).with_port(sensor.port.clone())
+        })
+        .collect();
+    // These two come from nvidia-smi and the HBA ioctl rather than hwmon, and aren't probed here.
+    if config.gpu.enabled {
+        present.push(SensorReading::new("gpu", SensorCategory::Gpu, "GPU", None, "nvidia-smi"));
+    }
+    if config.hba.enabled {
+        present.push(SensorReading::new("hba", SensorCategory::Hba, "LSI HBA", None, "mpt3ctl"));
+    }
+
+    for curve_config in &config.curves {
+        let curve = FanCurve::from_config(curve_config, &config.zones);
+        println!();
+        report_input(&curve.fan_channel_id, &curve.members, &present);
+        for (index, floor) in curve.floors.iter().enumerate() {
+            report_input(&format!("{} floor {}", curve.fan_channel_id, index + 1), &floor.members, &present);
+        }
+    }
+}
+
+fn report_input(name: &str, members: &[Member], present: &[SensorReading]) {
+    println!("{name}:");
+    for reading in present.iter().filter(|reading| members.iter().any(|member| member.matches(reading))) {
+        match &reading.port {
+            Some(port) => println!("  {} on {port}", reading.id),
+            None => println!("  {}", reading.id),
+        }
+    }
+
+    for member in members.iter().filter(|member| !present.iter().any(|reading| member.matches(reading))) {
+        match member {
+            Member::Named(_) => println!("  WARNING: {member} matches nothing here; this input will run at its fail-safe duty."),
+            Member::Wildcard { .. } => println!("  WARNING: {member} matches nothing here."),
+        }
+    }
+}
+
 /// SMART health on its own slow cycle, completely decoupled from the control loop. Drives
 /// are re-resolved on every cycle, so this follows hot-swaps and sdX reshuffles on its own.
 fn spawn_drive_health_poller(config: &Config, sysfs: Arc<dyn SysFs>, results: Arc<Mutex<Vec<smart::DriveHealth>>>) {
     let sysfs_root = config.sysfs_root.clone();
+    let by_path_dir = config.disk_by_path_dir.clone();
     let config = config.drive_health.clone();
     log!(Info, "Drive health polling every {:?}.", Duration::from_secs_f64(config.poll_interval_secs));
 
     let spawned = std::thread::Builder::new().name("drive-health".to_owned()).spawn(move || {
         while !SHUTDOWN.load(Ordering::Relaxed) {
-            let drives = sensors::HwmonResolver::new(&*sysfs, &sysfs_root).resolve(&[sensors::DRIVE_SPEC]);
+            let drives = sensors::HwmonResolver::new(&*sysfs, &sysfs_root).with_by_path_dir(&by_path_dir).resolve(&[sensors::DRIVE_SPEC]);
             let health = smart::poll_all(&config, &drives, &status::now_rfc3339());
 
             for drive in health.iter().filter(|drive| drive.passed == Some(false)) {

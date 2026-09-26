@@ -146,6 +146,7 @@ export function diffDriveHealth(previous: DriveState | undefined, current: Drive
 
 	const state: DriveState = {
 		wwn: current.deviceName,
+		port: current.port ?? null,
 		passed: current.passed,
 		reallocatedSectorCount: current.reallocatedSectorCount,
 		pendingSectorCount: current.pendingSectorCount,

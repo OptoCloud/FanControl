@@ -10,6 +10,12 @@ export interface SensorReading {
 	celsiusOrNull: number | null;
 	sourcePath: string;
 	isAvailable: boolean;
+	/**
+	 * Drives only: the /dev/disk/by-path name of the port (bay) the drive is plugged into, e.g.
+	 * "pci-0000:01:00.1-ata-3". The id says which disk; this says where it sits. Absent from
+	 * daemons that predate ports.
+	 */
+	port?: string | null;
 }
 
 export type PwmMode = 'disabled' | 'manual' | 'thermalCruise' | 'speedCruise' | 'smartFanIII' | 'smartFanIV';
@@ -24,6 +30,7 @@ export interface FanStatus {
 
 export interface DriveHealth {
 	deviceName: string;
+	port?: string | null;
 	passed: boolean | null;
 	reallocatedSectorCount: number | null;
 	pendingSectorCount: number | null;
@@ -46,6 +53,8 @@ export interface Snapshot {
 /** A drive's last GOOD health result. The daemon only reports what its latest poll saw, and a sleeping drive isn't woken, so this is what survives those gaps. */
 export interface DriveState {
 	wwn: string;
+	/** The bay it was in when it last answered. */
+	port: string | null;
 	passed: boolean | null;
 	reallocatedSectorCount: number | null;
 	pendingSectorCount: number | null;
@@ -91,7 +100,11 @@ export interface HistoryResponse {
 	from: number;
 	to: number;
 	bucketSeconds: number;
-	/** Keyed by series id: a sensor id, or "drives:max" / "memory:max" for the hottest of a group. */
+	/**
+	 * Keyed by series id: a sensor id ("drive:<wwn>" follows a disk), a bay ("port:<by-path>"
+	 * follows a location, whichever disk is in it), or "drives:max" / "memory:max" for the
+	 * hottest of a group.
+	 */
 	temperatures: Record<string, SeriesPoints>;
 	/** Keyed by fan id. */
 	duties: Record<string, SeriesPoints>;

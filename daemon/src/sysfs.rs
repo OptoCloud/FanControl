@@ -18,6 +18,10 @@ pub trait SysFs: Send + Sync {
     /// Full paths of the directories (or symlinks to directories) directly under `path`,
     /// sorted. Empty if `path` doesn't exist.
     fn list_dirs(&self, path: &str) -> Vec<String>;
+
+    /// (link name, final component of its target) for every symlink directly under `path`,
+    /// sorted by name. For /dev/disk/by-path: ("pci-0000:01:00.1-ata-3", "sdk").
+    fn list_links(&self, path: &str) -> Vec<(String, String)>;
 }
 
 pub fn join(segments: &[&str]) -> String {
@@ -59,6 +63,22 @@ impl SysFs for LinuxSysFs {
         dirs.sort();
         dirs
     }
+
+    fn list_links(&self, path: &str) -> Vec<(String, String)> {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return Vec::new();
+        };
+
+        let mut links: Vec<(String, String)> = entries
+            .flatten()
+            .filter_map(|entry| {
+                let target = std::fs::read_link(entry.path()).ok()?;
+                Some((entry.file_name().into_string().ok()?, target.file_name()?.to_str()?.to_owned()))
+            })
+            .collect();
+        links.sort();
+        links
+    }
 }
 
 #[cfg(test)]
@@ -73,6 +93,7 @@ pub mod fake {
     pub struct FakeSysFs {
         files: Mutex<HashMap<String, String>>,
         dirs: Mutex<BTreeSet<String>>,
+        links: Mutex<BTreeSet<(String, String, String)>>,
         failing_writes: Mutex<HashSet<String>>,
     }
 
@@ -88,6 +109,12 @@ pub mod fake {
 
         pub fn with_dir(self, path: &str) -> Self {
             self.add_dir(path);
+            self
+        }
+
+        /// A symlink `dir/name` pointing at something whose last path component is `target`.
+        pub fn with_link(self, dir: &str, name: &str, target: &str) -> Self {
+            self.links.lock().unwrap().insert((dir.to_owned(), name.to_owned(), target.to_owned()));
             self
         }
 
@@ -148,6 +175,11 @@ pub mod fake {
                 .filter(|dir| dir.strip_prefix(&prefix).is_some_and(|rest| !rest.contains('/')))
                 .cloned()
                 .collect()
+        }
+
+        fn list_links(&self, path: &str) -> Vec<(String, String)> {
+            let links = self.links.lock().unwrap();
+            links.iter().filter(|(dir, _, _)| dir == path).map(|(_, name, target)| (name.clone(), target.clone())).collect()
         }
     }
 }

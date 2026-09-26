@@ -45,6 +45,11 @@ echo Tctl > "$SYS/class/hwmon/hwmon0/temp1_label"; echo 60000 > "$SYS/class/hwmo
 echo drivetemp > "$SYS/class/hwmon/hwmon5/name"
 echo 40000 > "$SYS/class/hwmon/hwmon5/temp1_input"
 echo naa.5000c500aaaa0001 > "$SYS/class/block/sda/device/wwid"
+# udev's by-path links, as real symlinks: the drive's port, plus the extras udev also makes.
+mkdir -p "$WORK/by-path"
+ln -s ../../sda "$WORK/by-path/pci-0000:01:00.1-ata-3"
+ln -s ../../sda "$WORK/by-path/pci-0000:01:00.1-ata-3.0"
+ln -s ../../sda1 "$WORK/by-path/pci-0000:01:00.1-ata-3-part1"
 
 printf '#!/bin/sh\necho 70\n' > "$WORK/bin/nvidia-smi"
 printf '#!/bin/sh\necho '"'"'{"smart_status":{"passed":true},"ata_smart_attributes":{"table":[{"id":5,"raw":{"value":7}}]},"power_on_time":{"hours":100}}'"'"'\n' > "$WORK/bin/smartctl"
@@ -55,6 +60,7 @@ cat > "$WORK/fancontrol.toml" <<EOF
 poll_interval_secs = 0.2
 deadman_timeout_secs = 5
 sysfs_root = "$SYS"
+disk_by_path_dir = "$WORK/by-path"
 
 [api]
 socket_path = "$SOCKET"
@@ -87,7 +93,7 @@ points = [[30, 20], [50, 50], [70, 100]]
 
 [[curves]]
 fan_channel_id = "intake"
-sensor_ids = ["gpu", "drive:*"]
+sensor_ids = ["gpu", "port:pci-0000:01:00.1-ata-3"]
 points = [[30, 20], [50, 50], [70, 100]]
 EOF
 
@@ -95,7 +101,9 @@ api() { curl -s --max-time 5 --unix-socket "$SOCKET" "http://localhost$1"; }
 field() { python3 -c "import json,sys; s=json.load(sys.stdin); print($1)"; }
 
 echo "config check"
-"$WORK/fancontrol" --config "$WORK/fancontrol.toml" --check > /dev/null; check "--check accepts the config" "$?" "0"
+"$WORK/fancontrol" --config "$WORK/fancontrol.toml" --check > "$WORK/check.out"; check "--check accepts the config" "$?" "0"
+check "--check shows what the intake curve reads" "$(grep -c 'drive:naa.5000c500aaaa0001 on pci-0000:01:00.1-ata-3$' "$WORK/check.out")" "1"
+check "--check finds every named input" "$(grep -c WARNING "$WORK/check.out")" "0"
 sed 's/index = 2/index = 1/' "$WORK/fancontrol.toml" > "$WORK/bad.toml"
 "$WORK/fancontrol" --config "$WORK/bad.toml" --check > /dev/null 2>&1; check "--check rejects two channels on one header" "$?" "1"
 check "a rejected config touches no fan" "$(cat "$CHIP/pwm1_enable")" "5"
@@ -111,7 +119,7 @@ check "socket mode is 0660" "$(stat -c %a "$SOCKET")" "660"
 echo "fan control"
 check "pwm1 taken to manual" "$(cat "$CHIP/pwm1_enable")" "1"
 check "pwm1 duty follows cpu at 60C (75% = 191)" "$(cat "$CHIP/pwm1")" "191"
-check "pwm2 duty follows the hotter of gpu 70C / drive 40C (100% = 255)" "$(cat "$CHIP/pwm2")" "255"
+check "pwm2 duty follows the hotter of gpu 70C / the drive on ata-3 at 40C (100% = 255)" "$(cat "$CHIP/pwm2")" "255"
 
 echo "GET /status"
 STATUS="$(api /status)"
@@ -119,6 +127,9 @@ check "loop healthy" "$(echo "$STATUS" | field 's["controlLoopHealthy"]')" "True
 check "sensor ids" "$(echo "$STATUS" | field '",".join(sorted(x["id"] for x in s["sensors"]))')" "board,cpu,drive:naa.5000c500aaaa0001,gpu,hba"
 check "fan mode is a string" "$(echo "$STATUS" | field 's["fans"][0]["mode"]')" "manual"
 check "drive health keyed by WWN" "$(echo "$STATUS" | field 's["driveHealth"][0]["deviceName"]')" "naa.5000c500aaaa0001"
+check "drive reading carries its port" "$(echo "$STATUS" | field '[x["port"] for x in s["sensors"] if x["id"].startswith("drive:")][0]')" "pci-0000:01:00.1-ata-3"
+check "other sensors have no port" "$(echo "$STATUS" | field '[x["port"] for x in s["sensors"] if x["id"] == "cpu"][0]')" "None"
+check "drive health carries its port" "$(echo "$STATUS" | field 's["driveHealth"][0]["port"]')" "pci-0000:01:00.1-ata-3"
 check "drive health parsed" "$(echo "$STATUS" | field 's["driveHealth"][0]["reallocatedSectorCount"]')" "7"
 check "unknown path is 404" "$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$SOCKET" http://localhost/nope)" "404"
 check "POST is 405" "$(curl -s -o /dev/null -w '%{http_code}' -X POST --unix-socket "$SOCKET" http://localhost/status)" "405"

@@ -231,7 +231,7 @@
 		<EventLog {events} {now} />
 	</div>
 
-	<DriveTable {sensors} {drives} {now} />
+	<DriveTable {sensors} {drives} {history} {now} />
 </main>
 
 <style>

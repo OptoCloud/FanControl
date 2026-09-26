@@ -31,6 +31,8 @@ const ATA_ATTRIBUTE_CURRENT_PENDING_SECTOR_COUNT: u64 = 197;
 pub struct DriveHealth {
     /// Stable drive identity (WWN), NOT the live sdX letter.
     pub device_name: String,
+    /// The by-path name of the port the drive was plugged into for this poll, if known.
+    pub port: Option<String>,
     pub passed: Option<bool>,
     pub reallocated_sector_count: Option<u64>,
     pub pending_sector_count: Option<u64>,
@@ -62,6 +64,7 @@ pub fn parse(stable_id: &str, json: &str, source_path: &str, as_of: &str) -> Dri
 
     DriveHealth {
         device_name: stable_id.to_owned(),
+        port: None,
         passed,
         reallocated_sector_count: attribute(ATA_ATTRIBUTE_REALLOCATED_SECTOR_COUNT),
         pending_sector_count: attribute(ATA_ATTRIBUTE_CURRENT_PENDING_SECTOR_COUNT),
@@ -85,7 +88,10 @@ pub fn poll_all(config: &DriveHealthConfig, drives: &[ResolvedSensor], as_of: &s
                 scope.spawn(move || {
                     let device_path = format!("/dev/{device_name}");
                     let output = process::run(&config.smartctl_path, &["-H", "-A", "-j", "-n", "standby", &device_path], timeout);
-                    parse(&drive.label, output.as_ref().map_or("", |o| o.stdout.as_str()), &device_path, as_of)
+                    DriveHealth {
+                        port: drive.port.clone(),
+                        ..parse(&drive.label, output.as_ref().map_or("", |o| o.stdout.as_str()), &device_path, as_of)
+                    }
                 })
             })
             .collect();
@@ -192,6 +198,7 @@ mod tests {
             label: wwn.to_owned(),
             temp_input_path: String::new(),
             device_name: device.map(str::to_owned),
+            port: None,
         };
 
         let results = poll_all(&config, &[drive("naa.1", Some("sda")), drive("naa.2", Some("sdb")), drive("dimm", None)], NOW);

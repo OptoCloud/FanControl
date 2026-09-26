@@ -19,14 +19,10 @@ socket_mode = "0660"
 # For a consumer in an UNPRIVILEGED LXC: bind-mount the directory (not the socket file,
 # which is recreated on every start) into the container,
 #   pct set <vmid> -mp0 /run/fancontrol,mp=/run/fancontrol
-# and give the socket to the host uid/gid the container maps to.
-#
-# On orion the consumer is the dashboard in CT 203: uid 100000 is the container's root, and
-# gid 102000 is its `dashboard` group (gid 2000 inside), which the dashboard service runs as.
-# Without these the socket is root:root 0660 and the dashboard can't open it, while every
-# check run from the host as root still works.
-socket_uid = 100000
-socket_gid = 102000
+# and give the socket to the host uid/gid the container's root maps to (100000 unless the
+# container has a custom idmap):
+# socket_uid = 100000
+# socket_gid = 100000
 max_clients = 16
 
 [gpu]
@@ -43,43 +39,6 @@ ioc_number = 0
 enabled = true
 poll_interval_secs = 900
 timeout_secs = 60
-
-# Zones group sensors by the airflow they sit in, not by sensor category. The case has two
-# compartments:
-#
-#  - Bottom: the PSU and 12 drive bays, 11 filled. Both drive-cage fans share one header
-#    and exhaust, but the two stacks don't share a path to them. The fans sit behind the
-#    8-bay stack (right), a straight run. The PSU sits behind the 4-bay stack (left), so
-#    its air turns around the PSU face first, and extra duty mostly goes down the easy
-#    path into the 8-bay. So the 8-bay sets the speed and the 4-bay is a floor under it.
-#  - Top: motherboard, CPU, GPU, the LSI HBA and the two Samsung 870 EVO SSDs, bolted to
-#    the case wall. One intake blows across the SSD/LSI/GPU side, another onto the CPU.
-#    lsi-cooling is not a case fan: it is on the HBA's own shroud.
-#
-# Zones name bays by port: "port:" plus the drive's /dev/disk/by-path name, which carries
-# the controller's PCI address and the port or phy on it. A port stays with the bay, so a
-# swapped disk lands in the right zone with no config change; a drive's WWN (its sensor
-# id, "drive:naa...") follows the disk and is what history and SMART are keyed on.
-# `ls -l /dev/disk/by-path/` on the host lists them. 0000:03:00.0 is the LSI SAS9300-8i,
-# 0000:01:00.1 the motherboard SATA controller; its ata numbers are the board's own port
-# numbers, not probe order (ata-4 exists with nothing attached).
-
-# The LSI's eight phys: 8-bay 1-8 are phy0-phy7. The void pool.
-[[zones]]
-id = "eight-bay"
-sensor_ids = ["port:pci-0000:03:00.0-sas-*"]
-
-# 4-bay 1 is ata-3 (scratch, SMR), 4-bay 3 is ata-6 and 4-bay 4 is ata-5 (the hot spares).
-# 4-bay 2 would be ata-4, which has nothing attached; add it here if a disk goes in, since
-# a port named here with no drive on it counts as an unreadable sensor.
-[[zones]]
-id = "four-bay"
-sensor_ids = ["port:pci-0000:01:00.1-ata-3", "port:pci-0000:01:00.1-ata-6", "port:pci-0000:01:00.1-ata-5"]
-
-# The two rpool SSDs on ata-1 and ata-2, bolted to the top compartment's case wall.
-[[zones]]
-id = "component-bay"
-sensor_ids = ["hba", "port:pci-0000:01:00.1-ata-1", "port:pci-0000:01:00.1-ata-2"]
 
 # Header mapping verified on this board (ASRock B550 Pro4, NCT6798D) by walking each
 # channel in manual mode and watching which tach responds. pwm6 is unwired.
@@ -123,8 +82,6 @@ minimum_duty_percent = 30
 # points are [temperature_celsius, duty_percent], ascending. The hottest of sensor_ids
 # drives the fan; "drive:*" means every drive. fail_safe_duty_percent applies when every
 # sensor is unreadable, and is a floor when only some explicitly named one is.
-# [[curves.floors]] adds an input with its own points that can only raise the duty: the
-# fan runs at the highest of the curve and its floors, each with its own hysteresis.
 
 [[curves]]
 fan_channel_id = "cpu-cooler-front"
@@ -146,25 +103,18 @@ fail_safe_duty_percent = 100
 
 [[curves]]
 fan_channel_id = "intake-gpu-lsi"
-zones = ["component-bay"]
-sensor_ids = ["gpu"]
+sensor_ids = ["gpu", "hba"]
 points = [[40, 30], [55, 45], [70, 70], [85, 100]]
 fail_safe_duty_percent = 80
 
 [[curves]]
 fan_channel_id = "lsi-cooling"
-sensor_ids = ["hba"]
+sensor_ids = ["hba", "drive:*"]
 points = [[45, 35], [55, 50], [65, 75], [75, 100]]
 fail_safe_duty_percent = 80
 
 [[curves]]
 fan_channel_id = "drive-cage"
-zones = ["eight-bay"]
+sensor_ids = ["drive:*"]
 points = [[28, 30], [33, 45], [38, 65], [43, 90], [48, 100]]
 fail_safe_duty_percent = 80
-
-# Sits at the channel minimum until a 4-bay drive reaches 45C (five days of history
-# peaked at 40C), reaching 100% at 55C, under the ~60C the drives are rated for.
-[[curves.floors]]
-zones = ["four-bay"]
-points = [[45, 30], [50, 65], [55, 100]]
