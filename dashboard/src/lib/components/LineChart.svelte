@@ -15,6 +15,9 @@
 
 	let { title, series, from, to, unit, yDomain, loading = false }: Props = $props();
 
+	const uid = $props.id();
+	const clipId = `plot-${uid}`;
+
 	const HEIGHT = 240;
 	const MARGIN = { top: 12, right: 16, bottom: 26, left: 40 };
 
@@ -172,9 +175,20 @@
 				{/each}
 				<line class="axis" x1={MARGIN.left} x2={width - MARGIN.right} y1={HEIGHT - MARGIN.bottom} y2={HEIGHT - MARGIN.bottom} />
 
-				{#each visible as s (s.id)}
-					<path d={path(s.points)} fill="none" stroke={s.color} stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
-				{/each}
+				<defs>
+					<clipPath id={clipId}>
+						<!-- 2px of slack top and bottom, so a line sitting on an axis bound (100% duty) is not half cut. -->
+						<rect x={MARGIN.left} y={MARGIN.top - 2} width={Math.max(0, width - MARGIN.left - MARGIN.right)} height={HEIGHT - MARGIN.top - MARGIN.bottom + 4} />
+					</clipPath>
+				</defs>
+
+				<!-- History buckets can start before the window's left edge and a fitted axis can round inside
+				     the data, so the lines are clipped to the plot area instead of spilling over the labels. -->
+				<g clip-path="url(#{clipId})">
+					{#each visible as s (s.id)}
+						<path d={path(s.points)} fill="none" stroke={s.color} stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+					{/each}
+				</g>
 
 				{#if readout}
 					<line class="crosshair" x1={x(readout.time)} x2={x(readout.time)} y1={MARGIN.top} y2={HEIGHT - MARGIN.bottom} />
