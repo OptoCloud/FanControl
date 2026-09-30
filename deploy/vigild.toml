@@ -21,9 +21,9 @@ socket_mode = "0660"
 #   pct set <vmid> -mp0 /run/vigil,mp=/mnt/vigil
 # and give the socket to the host uid/gid the container maps to.
 #
-# On orion the consumer is vigil-web in CT 203: uid 100000 is the container's root, and
-# gid 102000 is its `vigil` group (gid 2000 inside), which vigil-web runs as.
-# Without these the socket is root:root 0660 and vigil-web can't open it, while every
+# On orion the consumer is vigil-core in CT 203: uid 100000 is the container's root, and
+# gid 102000 is its `vigil` group (gid 2000 inside), which vigil-core runs as.
+# Without these the socket is root:root 0660 and vigil-core can't open it, while every
 # check run from the host as root still works.
 socket_uid = 100000
 socket_gid = 102000
