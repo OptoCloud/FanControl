@@ -1,8 +1,16 @@
-# fancontrol
+# vigil
 
-A sensor-aware fan control daemon for a Linux (Proxmox) host, built because
-BIOS Smart Fan curves have no idea what an LSI HBA, a drive array, or a GPU
-are actually doing.
+Looks after the hardware of a Linux (Proxmox) NAS host. Two parts:
+
+- **`vigild`** (`daemon/`), the hardware daemon. It reads every temperature
+  on the host and each drive's SMART health, and drives the fans, because BIOS
+  Smart Fan curves have no idea what an LSI HBA, a drive array, or a GPU are
+  actually doing. It runs as root on the host and is the only part that
+  changes anything.
+- **`vigil-web`** (`web/`), the dashboard. It records `vigild`'s readings and
+  the UPS into history, shows them live and raises alerts. It only reads.
+
+Most of this README is `vigild`; [vigil-web](#vigil-web) has its own section.
 
 ## Why
 
@@ -72,7 +80,7 @@ life as a .NET daemon; that implementation is in the git history.)
 - **Config is validated before any fan is touched.** Out-of-range duties,
   unsorted curve points, a curve naming an unknown channel, or a channel with
   no curve (or two) all refuse to start with every problem listed.
-  `fancontrol --check` does only that, then (on the target machine) lists what
+  `vigild --check` does only that, then (on the target machine) lists what
   every curve would read and warns about any member that matches
   nothing there, and exits. It reads no temperature and touches no fan.
 - **Fan stalls are detected.** A header reading 0 RPM for several consecutive
@@ -104,8 +112,8 @@ life as a .NET daemon; that implementation is in the git history.)
 ## API
 
 ```bash
-curl    --unix-socket /run/fancontrol/fancontrol.sock http://localhost/status
-curl -N --unix-socket /run/fancontrol/fancontrol.sock http://localhost/events
+curl    --unix-socket /run/vigil/vigild.sock http://localhost/status
+curl -N --unix-socket /run/vigil/vigild.sock http://localhost/events
 ```
 
 - `GET /status`: the latest snapshot as JSON (`503` before the first poll).
@@ -150,8 +158,10 @@ capped by `api.max_clients`; past that, new ones get `503`.
   validation, the HBA wire format, SMART parsing, the safety guard, the
   control loop itself) is separated from the thin platform plumbing around it
   and unit-tested against an in-memory sysfs.
-- `deploy/`: systemd unit, config, `tmpfiles.d` and `modules-load.d` entries,
-  `release-fans.sh`, and the header-mapping helper scripts.
+- `deploy/`: `vigild`'s systemd unit, config, `tmpfiles.d` and
+  `modules-load.d` entries, `release-fans.sh`, and the header-mapping helper
+  scripts.
+- `web/`: `vigil-web`, see [below](#vigil-web).
 
 ## Build and test
 
@@ -173,7 +183,7 @@ on a vanished sensor, and the fans being handed back on SIGTERM. It needs no
 hardware and no root, so it runs under WSL or in CI:
 
 ```powershell
-wsl -e bash /mnt/e/path/to/daemon/scripts/integration-test.sh /mnt/e/path/to/daemon/target/x86_64-unknown-linux-musl/release/fancontrol
+wsl -e bash /mnt/e/path/to/daemon/scripts/integration-test.sh /mnt/e/path/to/daemon/target/x86_64-unknown-linux-musl/release/vigild
 ```
 
 Neither covers the `/dev/mpt3ctl` ioctl, real `nvidia-smi`/`smartctl` output
@@ -189,12 +199,12 @@ reported unavailable.
 
 | File | Goes to |
 |---|---|
-| `daemon/target/x86_64-unknown-linux-musl/release/fancontrol` | `/opt/fancontrol/fancontrol` (`chmod +x`) |
-| `deploy/release-fans.sh` | `/opt/fancontrol/release-fans.sh` |
-| `deploy/fancontrol.toml` | `/etc/fancontrol/fancontrol.toml` |
-| `deploy/fancontrol.service` | `/etc/systemd/system/fancontrol.service` |
-| `deploy/tmpfiles.d/fancontrol.conf` | `/etc/tmpfiles.d/fancontrol.conf` |
-| `deploy/modules-load.d/fancontrol.conf` | `/etc/modules-load.d/fancontrol.conf` |
+| `daemon/target/x86_64-unknown-linux-musl/release/vigild` | `/opt/vigil/vigild` (`chmod +x`) |
+| `deploy/release-fans.sh` | `/opt/vigil/release-fans.sh` |
+| `deploy/vigild.toml` | `/etc/vigil/vigild.toml` |
+| `deploy/vigild.service` | `/etc/systemd/system/vigild.service` |
+| `deploy/tmpfiles.d/vigil.conf` | `/etc/tmpfiles.d/vigil.conf` |
+| `deploy/modules-load.d/vigil.conf` | `/etc/modules-load.d/vigil.conf` |
 
 **Stop the service before overwriting the binary, every time.** Linux
 memory-maps the running executable from disk; overwriting it in place while
@@ -202,19 +212,19 @@ the old process is still executing out of it gets that process killed with
 SIGBUS the next time it faults in a code page.
 
 ```bash
-systemctl stop fancontrol.service
+systemctl stop vigild.service
 # ... copy the files ...
-chmod +x /opt/fancontrol/fancontrol
-systemd-tmpfiles --create /etc/tmpfiles.d/fancontrol.conf
+chmod +x /opt/vigil/vigild
+systemd-tmpfiles --create /etc/tmpfiles.d/vigil.conf
 modprobe -a nct6775 drivetemp   # -a is required: `modprobe a b` without it loads
                                  # only `a`, treating `b` as a module parameter
-/opt/fancontrol/fancontrol --config /etc/fancontrol/fancontrol.toml --check
+/opt/vigil/vigild --config /etc/vigil/vigild.toml --check
 systemctl daemon-reload
-systemctl enable --now fancontrol.service
-journalctl -u fancontrol -f
+systemctl enable --now vigild.service
+journalctl -u vigild -f
 ```
 
-`channels` and `curves` in `fancontrol.toml` are specific to one board and its
+`channels` and `curves` in `vigild.toml` are specific to one board and its
 wiring. Leave both empty to run monitor-only, which never writes to any `pwmN`
 file.
 
@@ -250,14 +260,14 @@ host lists every port; the daemon uses the shortest link for each disk,
 ignoring partitions. Run `--check` on the host after editing zones: it prints
 exactly which drives each curve picked up.
 
-`fancontrol.service` runs as root (sysfs PWM attributes are root-owned, mode
+`vigild.service` runs as root (sysfs PWM attributes are root-owned, mode
 644). On stop it relies on `TimeoutStopSec=30` + `SIGTERM` so the daemon
 releases every channel itself. If it dies without that chance, `ExecStopPost`
 runs `release-fans.sh`, which hands any header still on manual back to Smart
-Fan IV; it can also be run by hand (`sh /opt/fancontrol/release-fans.sh`)
+Fan IV; it can also be run by hand (`sh /opt/vigil/release-fans.sh`)
 whenever the daemon isn't running.
 
-One thing still defeats that: `systemctl kill -s SIGKILL fancontrol` signals
+One thing still defeats that: `systemctl kill -s SIGKILL vigild` signals
 the whole unit by default, which kills the `ExecStopPost` script along with
 the daemon and leaves every header on manual until the automatic restart takes
 them over again. With `--kill-whom=main` (which is what a real crash, SIGBUS or
@@ -270,11 +280,11 @@ Bind-mount the socket's *directory* (the socket file itself is recreated on
 every start):
 
 ```bash
-pct set <vmid> -mp0 /run/fancontrol,mp=/run/fancontrol
+pct set <vmid> -mp0 /run/vigil,mp=/mnt/vigil
 ```
 
 and give the socket to the host uid the container's root maps to, in
-`fancontrol.toml`:
+`vigild.toml`:
 
 ```toml
 [api]
@@ -306,8 +316,10 @@ Known accepted quirks:
   possible, but several (especially `lsi-cooling` and `drive-cage`) are still
   based on limited data. Revisit once real-load history exists.
 
-The dashboard (`dashboard/`) is a SvelteKit app run under Node in an
-unprivileged LXC. It keeps the one connection to the daemon's socket, writes
+## vigil-web
+
+`vigil-web` (`web/`) is a SvelteKit app run under Node in an
+unprivileged LXC. It keeps the one connection to `vigild`'s socket, writes
 history to Postgres (10s samples for 7 days, 1-minute rollups forever), fans
 live data out to browsers over SSE, and owns alerting (stalled fans, unreadable
 or vanished sensors, SMART changes, power events, daemon outages; optional ntfy
@@ -324,10 +336,10 @@ A drive's temperature is stored twice: as `drive:<wwn>`, the disk's own trend
 wherever it's plugged in, and as `port:<by-path>`, the bay's trend whichever
 disk is in it. `bay_occupants` records which disk sat in which bay and when,
 and the drive table switches between the two views. See
-`dashboard/deploy/` for the unit and env template, `dashboard/deploy/package.sh`
+`web/deploy/` for the unit and env template, `web/deploy/package.sh`
 to build the deployable tarball. To develop without the hardware,
-`dashboard/scripts/mock-daemon.mjs` and `dashboard/scripts/mock-nut.mjs` stand
-in for the daemon and upsd, and `dashboard/docker-compose.dev.yml` runs
+`web/scripts/mock-daemon.mjs` and `web/scripts/mock-nut.mjs` stand
+in for `vigild` and upsd, and `web/docker-compose.dev.yml` runs
 Postgres.
 
 ## License

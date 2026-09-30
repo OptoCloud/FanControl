@@ -1,12 +1,12 @@
 [Unit]
-Description=fancontrol dashboard
+Description=vigil-web, the vigil dashboard
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-User=dashboard
-WorkingDirectory=/opt/fancontrol-dashboard
-EnvironmentFile=/etc/fancontrol-dashboard.env
+User=vigil
+WorkingDirectory=/opt/vigil-web
+EnvironmentFile=/etc/vigil-web.env
 Environment=NODE_ENV=production
 Environment=PORT=3000
 Environment=HOST=0.0.0.0

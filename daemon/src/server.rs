@@ -11,7 +11,7 @@
 //! access; a unix socket can't be reached from the network at all, and a containerised
 //! consumer gets the socket's directory bind-mounted in instead.
 //!
-//!   curl --unix-socket /run/fancontrol/fancontrol.sock http://localhost/status
+//!   curl --unix-socket /run/vigil/vigild.sock http://localhost/status
 
 use crate::status::StatusHub;
 use std::io::{self, Read, Write};

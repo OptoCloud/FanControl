@@ -1,8 +1,8 @@
-// A stand-in for the fancontrol daemon, for developing the dashboard without the hardware
+// A stand-in for vigild, for developing vigil-web without the hardware
 // (and on Windows, where the real daemon's unix socket isn't an option). Serves the same
 // GET /status and GET /events over TCP, with plausibly wandering temperatures.
 //
-//   node scripts/mock-daemon.mjs [port]            then run the app with FANCONTROL_URL=http://127.0.0.1:5178
+//   node scripts/mock-daemon.mjs [port]            then run the app with VIGILD_URL=http://127.0.0.1:5178
 //
 // Type a letter + Enter to inject a fault: s = stall a fan, g = GPU unreadable,
 // u = loop unhealthy, r = grow a drive's reallocated count, c = clear all faults.
@@ -129,7 +129,7 @@ http
 			response.writeHead(404).end();
 		}
 	})
-	.listen(port, '127.0.0.1', () => console.log(`mock fancontrol daemon on http://127.0.0.1:${port} (s/g/u/r/c + Enter to inject faults)`));
+	.listen(port, '127.0.0.1', () => console.log(`mock vigild on http://127.0.0.1:${port} (s/g/u/r/c + Enter to inject faults)`));
 
 process.stdin.on('data', (input) => {
 	const key = input.toString().trim();

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Hands every fan header still on manual PWM back to the BIOS's automatic curve.
 #
-# Wired up as fancontrol.service's ExecStopPost, which systemd runs after the daemon is
+# Wired up as vigild.service's ExecStopPost, which systemd runs after the daemon is
 # gone no matter HOW it went: clean stop, crash, SIGKILL, SIGBUS, OOM kill. The daemon's
 # own FanSafetyGuard covers every exit it gets a chance to react to, but nothing
 # in-process can cover being killed outright, and manual PWM is sticky in the chip: the

@@ -327,7 +327,7 @@ mod tests {
     /// unchanged config changes no fan's behaviour.
     #[test]
     fn a_config_without_zones_resolves_exactly_as_before() {
-        let config = Config::parse(include_str!("testdata/pre-zones-fancontrol.toml")).unwrap();
+        let config = Config::parse(include_str!("testdata/pre-zones.toml")).unwrap();
         assert_eq!(config.validate(), Vec::<String>::new());
         assert!(config.zones.is_empty());
 
@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn the_orion_config_lets_the_hottest_hdd_in_either_stack_set_the_cage_fan() {
-        let config = Config::parse(include_str!("../../deploy/fancontrol.toml")).unwrap();
+        let config = Config::parse(include_str!("../../deploy/vigild.toml")).unwrap();
         assert_eq!(config.validate(), Vec::<String>::new());
         let curve = |id: &str| FanCurve::from_config(config.curves.iter().find(|c| c.fan_channel_id == id).unwrap(), &config.zones);
         let matched = |curve: &FanCurve, reading: &SensorReading| curve.members.iter().any(|m| m.matches(reading));

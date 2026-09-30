@@ -1,5 +1,5 @@
 [package]
-name = "fancontrol"
+name = "vigild"
 version = "0.2.0"
 edition = "2024"
 license = "AGPL-3.0-or-later"

@@ -10,9 +10,9 @@ import * as db from './db';
 import { NutClient } from './nut';
 
 const config = {
-	socketPath: env.FANCONTROL_SOCKET || undefined,
-	daemonUrl: env.FANCONTROL_URL || undefined,
-	databaseUrl: env.DATABASE_URL || 'postgres://fancontrol@localhost/fancontrol',
+	socketPath: env.VIGILD_SOCKET || undefined,
+	daemonUrl: env.VIGILD_URL || undefined,
+	databaseUrl: env.DATABASE_URL || 'postgres://vigil@localhost/vigil',
 	// The daemon publishes every 2s. That resolution matters live, not in history.
 	persistIntervalMs: Number(env.PERSIST_INTERVAL_SECONDS || 10) * 1000,
 	rawRetentionDays: Number(env.RAW_RETENTION_DAYS || 7),
@@ -76,10 +76,10 @@ class Runtime {
 	}
 
 	async start(): Promise<void> {
-		console.log(`[fancontrol] daemon: ${config.socketPath ?? config.daemonUrl ?? 'http://127.0.0.1:5178'}`);
+		console.log(`[vigil] daemon: ${config.socketPath ?? config.daemonUrl ?? 'http://127.0.0.1:5178'}`);
 		this.client.start();
 		if (this.nut) {
-			console.log(`[fancontrol] ups: ${config.nutUps}@${config.nutHost}:${config.nutPort}`);
+			console.log(`[vigil] ups: ${config.nutUps}@${config.nutHost}:${config.nutPort}`);
 			this.nut.start();
 		}
 
@@ -109,7 +109,7 @@ class Runtime {
 			// Catch up on whatever raw samples accumulated but weren't rolled up before a restart.
 			await db.rollUp(this.sql, new Date(Date.now() - config.rawRetentionDays * 86_400_000));
 			this.databaseReady = true;
-			console.log('[fancontrol] database ready');
+			console.log('[vigil] database ready');
 		} catch (error) {
 			this.reportDatabaseError('preparing the database', error);
 			setTimeout(() => void this.prepareDatabase(), 15_000).unref();
@@ -173,7 +173,7 @@ class Runtime {
 		this.ups = { enabled: true, reading, error: null };
 		this.upsUnreadableSince = 0;
 		this.broadcast({ type: 'ups', ups: this.ups });
-		if (recovered) console.log(`[fancontrol] reading the UPS: ${reading.status.join(' ')}`);
+		if (recovered) console.log(`[vigil] reading the UPS: ${reading.status.join(' ')}`);
 
 		await this.evaluateUps();
 
@@ -189,7 +189,7 @@ class Runtime {
 	}
 
 	private async handleUpsError(error: string): Promise<void> {
-		if (this.ups.error !== error) console.log(`[fancontrol] cannot read the UPS: ${error}`);
+		if (this.ups.error !== error) console.log(`[vigil] cannot read the UPS: ${error}`);
 		if (this.ups.reading !== null || this.upsUnreadableSince === 0) this.upsUnreadableSince = Date.now();
 		this.ups = { enabled: true, reading: null, error };
 		this.broadcast({ type: 'ups', ups: this.ups });
@@ -204,13 +204,13 @@ class Runtime {
 	private handleConnectionChange(connected: boolean, reason?: string): void {
 		this.daemonConnected = connected;
 		this.broadcast({ type: 'daemon', connected });
-		console.log(connected ? '[fancontrol] connected to the daemon' : `[fancontrol] daemon connection lost: ${reason}`);
+		console.log(connected ? '[vigil] connected to the daemon' : `[vigil] daemon connection lost: ${reason}`);
 
 		if (this.daemonLostTimer) clearTimeout(this.daemonLostTimer);
 		if (connected) {
 			if (this.daemonLostRaised) {
 				this.daemonLostRaised = false;
-				void this.raise({ severity: 'info', kind: 'daemon-lost', message: 'The fancontrol daemon is reachable again.' });
+				void this.raise({ severity: 'info', kind: 'daemon-lost', message: 'vigild is reachable again.' });
 			}
 			return;
 		}
@@ -221,14 +221,14 @@ class Runtime {
 			void this.raise({
 				severity: 'critical',
 				kind: 'daemon-lost',
-				message: `The fancontrol daemon is unreachable (${reason ?? 'unknown reason'}). If it is not running, the fans are on BIOS control.`
+				message: `vigild is unreachable (${reason ?? 'unknown reason'}). If it is not running, the fans are on BIOS control.`
 			});
 		}, config.daemonLostAfterMs);
 		this.daemonLostTimer.unref();
 	}
 
 	private async raise(event: NewEvent): Promise<void> {
-		console.log(`[fancontrol] ${event.severity}: ${event.message}`);
+		console.log(`[vigil] ${event.severity}: ${event.message}`);
 
 		let record: EventRecord = { id: -Date.now(), ts: new Date().toISOString(), ...event };
 		if (this.databaseReady) {
@@ -251,14 +251,14 @@ class Runtime {
 				method: 'POST',
 				body: event.message,
 				headers: {
-					Title: event.severity === 'critical' ? 'fancontrol: CRITICAL' : 'fancontrol: warning',
+					Title: event.severity === 'critical' ? 'vigil: CRITICAL' : 'vigil: warning',
 					Priority: event.severity === 'critical' ? 'urgent' : 'default',
 					Tags: event.severity === 'critical' ? 'rotating_light' : 'warning'
 				},
 				signal: AbortSignal.timeout(10_000)
 			});
 		} catch (error) {
-			console.error('[fancontrol] could not send a notification:', error instanceof Error ? error.message : error);
+			console.error('[vigil] could not send a notification:', error instanceof Error ? error.message : error);
 		}
 	}
 
@@ -277,11 +277,11 @@ class Runtime {
 		const message = error instanceof Error ? error.message : String(error);
 		if (message === this.lastDatabaseError) return;
 		this.lastDatabaseError = message;
-		console.error(`[fancontrol] database error while ${doing}: ${message}`);
+		console.error(`[vigil] database error while ${doing}: ${message}`);
 	}
 }
 
-const globalKey = Symbol.for('fancontrol.runtime');
+const globalKey = Symbol.for('vigil.runtime');
 type GlobalWithRuntime = typeof globalThis & { [globalKey]?: Runtime };
 
 export function getRuntime(): Runtime {

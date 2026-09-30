@@ -4,10 +4,10 @@
 # several simultaneous event-stream consumers, real fan writes, and the fans being handed
 # back on SIGTERM. Needs no hardware and no root; runs anywhere with bash + curl (WSL, CI).
 #
-# Usage: integration-test.sh <path-to-fancontrol-binary>
+# Usage: integration-test.sh <path-to-vigild-binary>
 set -uo pipefail
 
-BINARY="$(realpath "${1:?Usage: integration-test.sh <path-to-fancontrol-binary>}")"
+BINARY="$(realpath "${1:?Usage: integration-test.sh <path-to-vigild-binary>}")"
 WORK="$(mktemp -d)"
 DAEMON_PID=""
 FAILURES=0
@@ -29,7 +29,7 @@ check() {
 }
 
 # The binary may live on a filesystem that can't mark it executable (a Windows drive under WSL).
-cp "$BINARY" "$WORK/fancontrol" && chmod +x "$WORK/fancontrol"
+cp "$BINARY" "$WORK/vigild" && chmod +x "$WORK/vigild"
 
 SYS="$WORK/sys"
 CHIP="$SYS/class/hwmon/hwmon2"
@@ -55,8 +55,8 @@ printf '#!/bin/sh\necho 70\n' > "$WORK/bin/nvidia-smi"
 printf '#!/bin/sh\necho '"'"'{"smart_status":{"passed":true},"ata_smart_attributes":{"table":[{"id":5,"raw":{"value":7}}]},"power_on_time":{"hours":100}}'"'"'\n' > "$WORK/bin/smartctl"
 chmod +x "$WORK/bin/nvidia-smi" "$WORK/bin/smartctl"
 
-SOCKET="$WORK/run/fancontrol.sock"
-cat > "$WORK/fancontrol.toml" <<EOF
+SOCKET="$WORK/run/vigild.sock"
+cat > "$WORK/vigild.toml" <<EOF
 poll_interval_secs = 0.2
 deadman_timeout_secs = 5
 sysfs_root = "$SYS"
@@ -101,15 +101,15 @@ api() { curl -s --max-time 5 --unix-socket "$SOCKET" "http://localhost$1"; }
 field() { python3 -c "import json,sys; s=json.load(sys.stdin); print($1)"; }
 
 echo "config check"
-"$WORK/fancontrol" --config "$WORK/fancontrol.toml" --check > "$WORK/check.out"; check "--check accepts the config" "$?" "0"
+"$WORK/vigild" --config "$WORK/vigild.toml" --check > "$WORK/check.out"; check "--check accepts the config" "$?" "0"
 check "--check shows what the intake curve reads" "$(grep -c 'drive:naa.5000c500aaaa0001 on pci-0000:01:00.1-ata-3$' "$WORK/check.out")" "1"
 check "--check finds every named input" "$(grep -c WARNING "$WORK/check.out")" "0"
-sed 's/index = 2/index = 1/' "$WORK/fancontrol.toml" > "$WORK/bad.toml"
-"$WORK/fancontrol" --config "$WORK/bad.toml" --check > /dev/null 2>&1; check "--check rejects two channels on one header" "$?" "1"
+sed 's/index = 2/index = 1/' "$WORK/vigild.toml" > "$WORK/bad.toml"
+"$WORK/vigild" --config "$WORK/bad.toml" --check > /dev/null 2>&1; check "--check rejects two channels on one header" "$?" "1"
 check "a rejected config touches no fan" "$(cat "$CHIP/pwm1_enable")" "5"
 
 echo "startup"
-"$WORK/fancontrol" --config "$WORK/fancontrol.toml" 2> "$WORK/daemon.log" &
+"$WORK/vigild" --config "$WORK/vigild.toml" 2> "$WORK/daemon.log" &
 DAEMON_PID=$!
 for _ in $(seq 50); do [[ -S "$SOCKET" ]] && break; sleep 0.1; done
 sleep 1
@@ -169,7 +169,7 @@ check "socket removed" "$([[ -e "$SOCKET" ]] && echo present || echo gone)" "gon
 
 echo "missing chip"
 rm "$CHIP/name"
-"$WORK/fancontrol" --config "$WORK/fancontrol.toml" 2> /dev/null; check "exits non-zero so systemd restarts it" "$?" "1"
+"$WORK/vigild" --config "$WORK/vigild.toml" 2> /dev/null; check "exits non-zero so systemd restarts it" "$?" "1"
 
 echo
 if [[ "$FAILURES" -eq 0 ]]; then

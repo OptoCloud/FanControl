@@ -1,4 +1,4 @@
-//! fancontrol: sensor-aware fan control daemon.
+//! vigild: vigil's hardware daemon. Reads the host's temperatures and drive health, and drives its fans.
 //!
 //! Deliberately holds as little state as it can: the latest snapshot, plus what the control
 //! algorithm itself needs from one poll to the next (hysteresis anchors, stall counters).
@@ -36,7 +36,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use sysfs::{LinuxSysFs, SysFs};
 
-const DEFAULT_CONFIG_PATH: &str = "/etc/fancontrol/fancontrol.toml";
+const DEFAULT_CONFIG_PATH: &str = "/etc/vigil/vigild.toml";
 
 /// Set by SIGTERM/SIGINT. Everything that waits does so in short slices and checks this.
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
@@ -49,7 +49,7 @@ fn main() -> ExitCode {
 
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!(
-            "Usage: fancontrol [--config PATH] [--check]\n\n  --config PATH  config file (default {DEFAULT_CONFIG_PATH})\n  --check        validate the config and exit without touching any fan"
+            "Usage: vigild [--config PATH] [--check]\n\n  --config PATH  config file (default {DEFAULT_CONFIG_PATH})\n  --check        validate the config and exit without touching any fan"
         );
         return ExitCode::SUCCESS;
     }

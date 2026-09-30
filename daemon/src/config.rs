@@ -82,7 +82,7 @@ impl Default for ApiConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            socket_path: "/run/fancontrol/fancontrol.sock".to_owned(),
+            socket_path: "/run/vigil/vigild.sock".to_owned(),
             socket_mode: "0660".to_owned(),
             socket_uid: None,
             socket_gid: None,
@@ -555,7 +555,7 @@ mod tests {
     /// dashboard silently loses access.
     #[test]
     fn the_orion_config_gives_the_socket_to_the_dashboard_container() {
-        let config = Config::parse(include_str!("../../deploy/fancontrol.toml")).unwrap();
+        let config = Config::parse(include_str!("../../deploy/vigild.toml")).unwrap();
 
         assert_eq!((config.api.socket_uid, config.api.socket_gid), (Some(100000), Some(102000)));
         assert_eq!(config.api.socket_mode_bits(), Some(0o660));

@@ -1,6 +1,6 @@
-# fancontrol configuration for orion. Installed as /etc/fancontrol/fancontrol.toml.
+# vigild configuration for orion. Installed as /etc/vigil/vigild.toml.
 # Validate after editing, without touching any fan:
-#   /opt/fancontrol/fancontrol --config /etc/fancontrol/fancontrol.toml --check
+#   /opt/vigil/vigild --config /etc/vigil/vigild.toml --check
 
 poll_interval_secs = 2
 # If the control loop doesn't complete a poll within this window, every channel is released
@@ -12,18 +12,18 @@ sensor_rescan_interval_secs = 30
 
 [api]
 # Unix socket only, never a network port. Try it from the host with:
-#   curl --unix-socket /run/fancontrol/fancontrol.sock http://localhost/status
-#   curl -N --unix-socket /run/fancontrol/fancontrol.sock http://localhost/events
-socket_path = "/run/fancontrol/fancontrol.sock"
+#   curl --unix-socket /run/vigil/vigild.sock http://localhost/status
+#   curl -N --unix-socket /run/vigil/vigild.sock http://localhost/events
+socket_path = "/run/vigil/vigild.sock"
 socket_mode = "0660"
 # For a consumer in an UNPRIVILEGED LXC: bind-mount the directory (not the socket file,
 # which is recreated on every start) into the container,
-#   pct set <vmid> -mp0 /run/fancontrol,mp=/run/fancontrol
+#   pct set <vmid> -mp0 /run/vigil,mp=/mnt/vigil
 # and give the socket to the host uid/gid the container maps to.
 #
-# On orion the consumer is the dashboard in CT 203: uid 100000 is the container's root, and
-# gid 102000 is its `dashboard` group (gid 2000 inside), which the dashboard service runs as.
-# Without these the socket is root:root 0660 and the dashboard can't open it, while every
+# On orion the consumer is vigil-web in CT 203: uid 100000 is the container's root, and
+# gid 102000 is its `vigil` group (gid 2000 inside), which vigil-web runs as.
+# Without these the socket is root:root 0660 and vigil-web can't open it, while every
 # check run from the host as root still works.
 socket_uid = 100000
 socket_gid = 102000

@@ -1,12 +1,12 @@
 [Unit]
-Description=fancontrol - sensor-aware fan control daemon
+Description=vigild - hardware daemon: temperatures, drive health, fan control
 After=sysinit.target systemd-tmpfiles-setup.service
 Wants=sysinit.target
 
 [Service]
 Type=notify
 NotifyAccess=main
-ExecStart=/opt/fancontrol/fancontrol --config /etc/fancontrol/fancontrol.toml
+ExecStart=/opt/vigil/vigild --config /etc/vigil/vigild.toml
 
 # Sysfs PWM attributes under /sys/class/hwmon are root:root, mode 644 by
 # default on this board's driver (nct6775): root is required to write them.
@@ -29,7 +29,7 @@ KillSignal=SIGTERM
 # manual PWM. Via /bin/sh so it works even without the exec bit.
 # NOTE: `systemctl kill -s SIGKILL` without --kill-whom=main signals the
 # whole unit and kills this script too. Never SIGKILL the whole unit.
-ExecStopPost=/bin/sh /opt/fancontrol/release-fans.sh
+ExecStopPost=/bin/sh /opt/vigil/release-fans.sh
 
 Restart=on-failure
 RestartSec=5

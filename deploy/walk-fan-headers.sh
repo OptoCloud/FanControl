@@ -6,7 +6,7 @@
 # auto") — a channel already sitting in manual mode before this script ran (as
 # pwm6 was observed to be, unwired, on this board) is put back exactly as found,
 # not switched into BIOS auto. Same restoration runs on Ctrl-C/kill via the trap.
-# Ends by printing ready-to-paste [[channels]] blocks for fancontrol.toml.
+# Ends by printing ready-to-paste [[channels]] blocks for vigild.toml.
 #
 # Run this ON THE HOST as root:  bash walk-fan-headers.sh
 set -euo pipefail
@@ -97,7 +97,7 @@ for i in "${!RESULT_N[@]}"; do
 done
 
 echo
-echo "=== Paste into /etc/fancontrol/fancontrol.toml (each channel also needs a [[curves]] entry) ==="
+echo "=== Paste into /etc/vigil/vigild.toml (each channel also needs a [[curves]] entry) ==="
 for i in "${!RESULT_N[@]}"; do
     cat <<EOF
 

@@ -180,7 +180,7 @@
 
 	const status = $derived.by((): { level: 'good' | 'warning' | 'critical'; label: string; detail: string } => {
 		if (!streamConnected) return { level: 'warning', label: 'Connecting', detail: 'Waiting for the live stream from the dashboard server.' };
-		if (!daemonConnected) return { level: 'critical', label: 'Daemon unreachable', detail: 'The dashboard server cannot reach the fancontrol daemon. If it is not running, the fans are on BIOS control.' };
+		if (!daemonConnected) return { level: 'critical', label: 'Daemon unreachable', detail: 'The dashboard server cannot reach vigild. If it is not running, the fans are on BIOS control.' };
 		if (!snapshot) return { level: 'warning', label: 'Waiting for data', detail: 'Connected, but no snapshot has arrived yet.' };
 		if (snapshotAge > 15_000) return { level: 'warning', label: 'Stale', detail: `The last snapshot is ${relativeTime(snapshot.timestampUtc, now)} old.` };
 		if (!snapshot.controlLoopHealthy) return { level: 'critical', label: 'Control loop unhealthy', detail: 'A fan channel could not be driven, or the loop has stopped polling.' };
@@ -191,7 +191,7 @@
 <main>
 	<header>
 		<div>
-			<h1>fancontrol</h1>
+			<h1>vigil</h1>
 			<p class="muted">
 				{#if snapshot}
 					{sensors.length} sensors, {snapshot.fans.length} fans, updated {relativeTime(snapshot.timestampUtc, now)}

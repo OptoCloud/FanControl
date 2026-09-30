@@ -11,7 +11,7 @@ export const GET: RequestHandler = async ({ url }) => {
 	try {
 		return json(await queryHistory(runtime.sql, range, runtime.ups.enabled ? runtime.upsName : undefined));
 	} catch (cause) {
-		console.error('[fancontrol] history query failed:', cause instanceof Error ? cause.message : cause);
+		console.error('[vigil] history query failed:', cause instanceof Error ? cause.message : cause);
 		error(503, 'History is unavailable: the database could not be reached.');
 	}
 };

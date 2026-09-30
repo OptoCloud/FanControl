@@ -1,4 +1,4 @@
-// The one connection this app keeps to the fancontrol daemon: a Server-Sent Events stream
+// The one connection this app keeps to vigild: a Server-Sent Events stream
 // of snapshots, over the daemon's unix socket. However many browsers are watching, the
 // daemon only ever sees this single consumer.
 
