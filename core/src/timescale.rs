@@ -11,6 +11,11 @@
 //!
 //! Every step is idempotent, so this runs on every start. The extension itself is created
 //! by CT 300's recipe: it needs a superuser, and vigil-core's role is not one.
+//!
+//! The one-time work (converting tables, copying old history, filling the aggregates over all
+//! time) can take far longer than vigil-core's 15-second statement timeout, so it runs without
+//! one. A finished fill is recorded in vigil_state; until that row exists every start fills
+//! again, so an interrupted fill is resumed, never silently skipped.
 
 use postgres::Client;
 use std::time::Duration;
@@ -119,6 +124,12 @@ pub fn setup(client: &mut Client, raw_retention: Duration) -> Result<(), String>
             .to_owned());
     }
 
+    // The one-time work outlasts the connection's 15-second limit; normal writes keep it.
+    client.batch_execute("set statement_timeout = 0").map_err(failed("lifting the statement timeout"))?;
+    client
+        .batch_execute("create table if not exists vigil_state (key text primary key, value text not null, updated timestamptz not null default now())")
+        .map_err(failed("creating vigil_state"))?;
+
     let mut fresh_aggregates = false;
     for series in &SERIES {
         client
@@ -164,17 +175,46 @@ pub fn setup(client: &mut Client, raw_retention: Duration) -> Result<(), String>
         }
     }
 
-    // New aggregates, or history just copied in: fill them over all time, minutes before hours.
-    // CALL can't run inside a transaction, so each is its own statement.
-    if fresh_aggregates {
+    // New aggregates, history just copied in, or a fill that never finished: fill them over
+    // everything their source still holds, minutes before hours. Refreshing is idempotent, so a
+    // repeat only costs time. The window starts at the source's oldest row, never earlier: a
+    // refresh over a period whose source rows retention has already dropped DELETES the rollups
+    // for that period, which are then the only copy left.
+    // CALL can't run inside a transaction or take a subquery, so each is its own statement.
+    let filled = client
+        .query_opt("select 1 from vigil_state where key = 'aggregates_filled'", &[])
+        .map_err(failed("reading vigil_state"))?
+        .is_some();
+    if fresh_aggregates || !filled {
+        crate::log!(Info, "filling the rollups over all history (once; this can take a while)");
+        let started = std::time::Instant::now();
         for level in ["1m", "1h"] {
             for series in &SERIES {
                 let name = name_of(series, level);
+                // Aligned down to a whole bucket, so the first partial bucket is filled too.
+                let (source, oldest_bucket) = if level == "1m" {
+                    (series.raw.to_owned(), "time_bucket('1 minute', min(ts))")
+                } else {
+                    (name_of(series, "1m"), "time_bucket('1 hour', min(bucket))")
+                };
+                let oldest: Option<String> = client
+                    .query_one(&format!("select {oldest_bucket}::text from {source}"), &[])
+                    .map_err(failed(&format!("finding the oldest row of {source}")))?
+                    .get(0);
+                let Some(oldest) = oldest else { continue };
                 client
-                    .batch_execute(&format!("call refresh_continuous_aggregate('{name}', null, null)"))
+                    .batch_execute(&format!("call refresh_continuous_aggregate('{name}', '{oldest}'::timestamptz, null)"))
                     .map_err(failed(&format!("filling {name}")))?;
             }
         }
+        client
+            .execute(
+                "insert into vigil_state (key, value) values ('aggregates_filled', now()::text)
+                 on conflict (key) do update set value = excluded.value, updated = now()",
+                &[],
+            )
+            .map_err(failed("recording the fill"))?;
+        crate::log!(Info, "rollups filled in {:.0}s", started.elapsed().as_secs_f64());
     }
 
     let raw_days = (raw_retention.as_secs() / 86_400).max(1);
@@ -221,6 +261,7 @@ pub fn setup(client: &mut Client, raw_retention: Duration) -> Result<(), String>
             .map_err(failed(&format!("scheduling compression of {}", series.raw)))?;
     }
 
+    client.batch_execute("reset statement_timeout").map_err(failed("restoring the statement timeout"))?;
     Ok(())
 }
 
