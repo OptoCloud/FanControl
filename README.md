@@ -345,8 +345,13 @@ thread that owns all state.
   bind-mounted in) and one to NUT's `upsd` over TCP, polling `LIST VAR` every
   5s like `upsmon`. Reads on upsd are anonymous, so it needs no NUT account.
   It only watches: `upsmon` on the host still owns the shutdown.
-- It writes history to Postgres (10s samples for 7 days, 1-minute rollups
-  forever) and owns the schema. A drive's temperature is stored twice: as
+- It writes history to Postgres with the TimescaleDB extension, and owns the
+  schema. It only inserts raw samples (every 10s); TimescaleDB's own jobs do
+  the rest: continuous aggregates roll them up per minute (`*_1m`) and per
+  hour (`*_1h`), raw chunks are compressed after 7 days and dropped after 30,
+  minute rollups after a year, and hourly ones are kept forever. The
+  extension has to be created in the database by a superuser first;
+  `vigil-core` checks for it and retries until it is there. A drive's temperature is stored twice: as
   `drive:<wwn>`, the disk's own trend wherever it's plugged in, and as
   `port:<by-path>`, the bay's trend whichever disk is in it. `bay_occupants`
   records which disk sat in which bay and when.
@@ -358,7 +363,7 @@ thread that owns all state.
   state on connect, then every change), on loopback only.
 
 It is configured from the environment: `VIGILD_SOCKET`, `DATABASE_URL`,
-`NUT_HOST`/`NUT_PORT`/`NUT_UPS`, `NTFY_URL`, `CORE_PORT` and a few more; see
+`NUT_HOST`/`NUT_PORT`/`NUT_UPS`, `NTFY_URL`, `RAW_RETENTION_DAYS`, `CORE_PORT`; see
 `core/deploy/vigil-core.env`. Without `NUT_HOST` the UPS is left out. Without
 a database the live stream still works, and it keeps retrying.
 
@@ -366,14 +371,17 @@ a database the live stream still works, and it keeps retrying.
 
 `vigil-web` (`web/`) is a SvelteKit app run under Node beside `vigil-core`.
 It relays `vigil-core`'s live stream to browsers and reads history and the
-event log straight from Postgres. It writes nothing. Configured by `CORE_URL`
+event log straight from Postgres. It writes nothing. Each chart range reads the
+coarsest level that still has its resolution: raw samples up to 6 hours, minute
+rollups up to 7 days, hourly ones for 30 days and a year. Configured by `CORE_URL`
 and `DATABASE_URL`; `web/deploy/package.sh` builds the deployable tarball.
 
 ## Development
 
 Without the hardware, `dev/mock-vigild.mjs` and `dev/mock-upsd.mjs` stand in
 for `vigild` and upsd (type a letter and Enter to inject a fault), and
-`dev/docker-compose.yml` runs Postgres:
+`dev/docker-compose.yml` runs Postgres with TimescaleDB, the same versions as
+production:
 
 ```bash
 docker compose -f dev/docker-compose.yml up -d

@@ -40,7 +40,7 @@ export function niceTicks(min: number, max: number, target = 5): number[] {
 const MINUTE = 60_000;
 const HOUR = 3_600_000;
 const DAY = 86_400_000;
-const TIME_STEPS = [MINUTE, 5 * MINUTE, 10 * MINUTE, 15 * MINUTE, 30 * MINUTE, HOUR, 2 * HOUR, 3 * HOUR, 6 * HOUR, 12 * HOUR, DAY, 2 * DAY, 5 * DAY, 7 * DAY];
+const TIME_STEPS = [MINUTE, 5 * MINUTE, 10 * MINUTE, 15 * MINUTE, 30 * MINUTE, HOUR, 2 * HOUR, 3 * HOUR, 6 * HOUR, 12 * HOUR, DAY, 2 * DAY, 5 * DAY, 7 * DAY, 14 * DAY, 30 * DAY, 61 * DAY];
 
 /** Tick instants on round local-clock boundaries (whole hours, midnights), at most `maxTicks` of them. */
 export function timeTicks(from: number, to: number, maxTicks: number): number[] {

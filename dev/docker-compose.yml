@@ -3,7 +3,8 @@
 #   DATABASE_URL=postgres://vigil:vigil@127.0.0.1:5433/vigil
 services:
   postgres:
-    image: postgres:17
+    # The same Postgres and TimescaleDB versions as CT 300; the image creates the extension itself.
+    image: timescale/timescaledb:2.30.2-pg18
     environment:
       POSTGRES_USER: vigil
       POSTGRES_PASSWORD: vigil
@@ -11,7 +12,8 @@ services:
     ports:
       - '127.0.0.1:5433:5432'
     volumes:
-      - vigil-dev-pg:/var/lib/postgresql/data
+      # Postgres 18 images keep their data one level up, under /var/lib/postgresql/18.
+      - vigil-dev-pg18:/var/lib/postgresql
 
 volumes:
-  vigil-dev-pg:
+  vigil-dev-pg18:

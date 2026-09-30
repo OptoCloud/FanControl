@@ -40,7 +40,8 @@
 		{ key: '6h', label: '6 hours' },
 		{ key: '24h', label: '24 hours' },
 		{ key: '7d', label: '7 days' },
-		{ key: '30d', label: '30 days' }
+		{ key: '30d', label: '30 days' },
+		{ key: '1y', label: '1 year' }
 	];
 
 	// Colour follows the entity, in a fixed order: the CPU line is the same blue in every

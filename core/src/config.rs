@@ -78,7 +78,7 @@ impl Config {
             daemon,
             database_url: get("DATABASE_URL").unwrap_or_else(|| "postgres://vigil@localhost/vigil".to_owned()),
             persist_interval: Duration::from_secs_f64(number("PERSIST_INTERVAL_SECONDS", 10.0)?),
-            raw_retention: Duration::from_secs_f64(number("RAW_RETENTION_DAYS", 7.0)? * 86_400.0),
+            raw_retention: Duration::from_secs_f64(number("RAW_RETENTION_DAYS", 30.0)? * 86_400.0),
             ntfy_url: get("NTFY_URL"),
             nut,
             ups_name,

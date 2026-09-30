@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::time::{Duration, Instant, SystemTime};
-use vigil_protocol::{DriveState, EventRecord, LiveMessage, Severity, Snapshot, UpsReading, UpsState, now_rfc3339, rfc3339};
+use vigil_protocol::{DriveState, EventRecord, LiveMessage, Severity, Snapshot, UpsReading, UpsState, now_rfc3339};
 
 pub enum Input {
     Daemon(DaemonEvent),
@@ -24,14 +24,12 @@ pub enum Input {
 }
 
 const DATABASE_RETRY: Duration = Duration::from_secs(15);
-const MAINTAIN_EVERY: Duration = Duration::from_secs(60);
 const INVENTORY_EVERY: Duration = Duration::from_secs(60);
 
 pub struct Runtime {
     config: Config,
     database: Option<Client>,
     next_database_attempt: Instant,
-    last_maintain: Instant,
     last_database_error: String,
 
     latest: Option<Snapshot>,
@@ -61,7 +59,6 @@ impl Runtime {
             config,
             database: None,
             next_database_attempt: Instant::now(),
-            last_maintain: Instant::now(),
             last_database_error: String::new(),
             latest: None,
             daemon_connected: false,
@@ -85,33 +82,32 @@ impl Runtime {
     pub fn run(mut self, inputs: Receiver<Input>) {
         loop {
             match inputs.recv_timeout(Duration::from_secs(1)) {
-                Ok(Input::Daemon(DaemonEvent::Snapshot(snapshot))) => self.handle_snapshot(*snapshot),
-                Ok(Input::Daemon(DaemonEvent::Connected)) => self.handle_daemon_connection(true, None),
-                Ok(Input::Daemon(DaemonEvent::Disconnected(reason))) => self.handle_daemon_connection(false, Some(reason)),
-                Ok(Input::Ups(result)) => self.handle_ups(*result),
-                Ok(Input::Subscribe(subscriber)) => self.subscribe(subscriber),
+                Ok(input) => self.handle(input),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
+            }
+            // Everything already queued goes first, so the time-based checks in tick() judge on
+            // the latest news. Preparing the database can take a while (filling the aggregates
+            // the first time), and a "connected to vigild" that arrived meanwhile must be seen
+            // before an outage is declared.
+            while let Ok(input) = inputs.try_recv() {
+                self.handle(input);
             }
             self.tick();
         }
     }
 
+    fn handle(&mut self, input: Input) {
+        match input {
+            Input::Daemon(DaemonEvent::Snapshot(snapshot)) => self.handle_snapshot(*snapshot),
+            Input::Daemon(DaemonEvent::Connected) => self.handle_daemon_connection(true, None),
+            Input::Daemon(DaemonEvent::Disconnected(reason)) => self.handle_daemon_connection(false, Some(reason)),
+            Input::Ups(result) => self.handle_ups(*result),
+            Input::Subscribe(subscriber) => self.subscribe(subscriber),
+        }
+    }
+
     fn tick(&mut self) {
-        if self.database.is_none() && Instant::now() >= self.next_database_attempt {
-            self.prepare_database();
-        }
-
-        if self.last_maintain.elapsed() >= MAINTAIN_EVERY {
-            self.last_maintain = Instant::now();
-            let since = ago(Duration::from_secs(600));
-            let older_than = ago(self.config.raw_retention);
-            self.with_database("rolling up history", |client| {
-                db::roll_up(client, &since)?;
-                db::prune_raw_samples(client, &older_than)
-            });
-        }
-
         // A daemon restart drops the stream for a second or two; only a lasting outage is news.
         if let Some((since, reason)) = &self.daemon_lost_since
             && !self.daemon_lost_raised
@@ -126,14 +122,18 @@ impl Runtime {
         if self.ups.enabled && self.ups.reading.is_none() {
             self.evaluate_ups();
         }
+
+        // Last, because it may block for a while; run() handles what queued up meanwhile first.
+        if self.database.is_none() && Instant::now() >= self.next_database_attempt {
+            self.prepare_database();
+        }
     }
 
     fn prepare_database(&mut self) {
         let result = db::connect(&self.config.database_url).and_then(|mut client| {
-            db::migrate(&mut client).map_err(|e| e.to_string())?;
-            let drives = db::load_drives(&mut client).map_err(|e| e.to_string())?;
-            // Catch up on whatever raw samples accumulated but weren't rolled up before a restart.
-            db::roll_up(&mut client, &ago(self.config.raw_retention)).map_err(|e| e.to_string())?;
+            // Rollups, compression and retention are TimescaleDB's own jobs from here on.
+            db::migrate(&mut client, self.config.raw_retention)?;
+            let drives = db::load_drives(&mut client).map_err(|e| db::describe(&e))?;
             Ok((client, drives))
         });
 
@@ -165,7 +165,7 @@ impl Runtime {
                     self.database = None;
                     self.next_database_attempt = Instant::now() + DATABASE_RETRY;
                 }
-                self.report_database_error(doing, &error.to_string());
+                self.report_database_error(doing, &db::describe(&error));
                 None
             }
         }
@@ -360,11 +360,6 @@ fn serialize(message: &LiveMessage) -> Arc<str> {
     serde_json::to_string(message).unwrap_or_else(|_| "{}".to_owned()).into()
 }
 
-/// RFC 3339 for `duration` ago.
-fn ago(duration: Duration) -> String {
-    rfc3339(SystemTime::now().checked_sub(duration).unwrap_or(SystemTime::UNIX_EPOCH))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -429,6 +424,20 @@ mod tests {
 
         runtime.handle_snapshot(snapshot(false));
         assert!(runtime.subscribers.is_empty());
+    }
+
+    #[test]
+    fn news_already_queued_is_handled_before_an_outage_is_judged() {
+        let config = Config { daemon_lost_after: Duration::ZERO, ..config() };
+        let (inputs, receiver) = mpsc::channel();
+        let (subscriber, stream) = mpsc::sync_channel(64);
+        inputs.send(Input::Subscribe(subscriber)).unwrap();
+        inputs.send(Input::Daemon(DaemonEvent::Connected)).unwrap();
+        drop(inputs);
+
+        Runtime::new(config).run(receiver);
+
+        assert!(!messages(&stream).iter().any(|m| m.contains("daemon-lost")));
     }
 
     #[test]

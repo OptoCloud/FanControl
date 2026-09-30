@@ -12,6 +12,7 @@ mod nut;
 mod runtime;
 mod server;
 mod sse;
+mod timescale;
 
 use config::Config;
 use runtime::{Input, Runtime};

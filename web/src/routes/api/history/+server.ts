@@ -5,7 +5,7 @@ import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = async ({ url }) => {
 	const range = url.searchParams.get('range');
-	if (!isRangeKey(range)) error(400, 'range must be one of 1h, 6h, 24h, 7d, 30d');
+	if (!isRangeKey(range)) error(400, 'range must be one of 1h, 6h, 24h, 7d, 30d, 1y');
 
 	const core = getCore();
 	try {

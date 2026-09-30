@@ -3,8 +3,8 @@
 //! vigil-web only reads it.
 //!
 //! Raw samples are narrow (one row per sensor per sample) so a sensor appearing or vanishing
-//! needs no schema change. They are only kept for a few days; the *_minutes tables are the
-//! long-term record and what every chart range beyond an hour reads from.
+//! needs no schema change. What happens to them afterwards (rollups, compression, retention)
+//! is TimescaleDB's job; see timescale.rs.
 //!
 //! A drive's temperature is stored twice, under two keys: "drive:<wwn>" follows the disk (its
 //! own trend, wherever it is plugged in) and "port:<by-path>" follows the bay (the trend of
@@ -21,14 +21,33 @@ use vigil_protocol::{DriveState, EventRecord, SensorReading, Severity, Snapshot,
 
 pub type Result<T> = std::result::Result<T, postgres::Error>;
 
+/// The error with its causes. postgres::Error's own text is only the kind ("db error",
+/// "invalid configuration"); what the server or the parser actually said is in its source.
+pub fn describe(error: &postgres::Error) -> String {
+    let mut text = error.to_string();
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    text
+}
+
 pub fn connect(url: &str) -> std::result::Result<Client, String> {
     let mut config = postgres::Config::from_str(url).map_err(|error| format!("DATABASE_URL: {error}"))?;
     // A hung database must not freeze vigil-core's one state thread for long.
     config.connect_timeout(Duration::from_secs(10)).options("-c statement_timeout=15000");
-    config.connect(NoTls).map_err(|error| error.to_string())
+    config.connect(NoTls).map_err(|error| describe(&error))
 }
 
-pub fn migrate(client: &mut Client) -> Result<()> {
+/// The base tables, then TimescaleDB's hypertables, aggregates and policies over them.
+pub fn migrate(client: &mut Client, raw_retention: Duration) -> std::result::Result<(), String> {
+    create_tables(client).map_err(|e| format!("creating tables: {}", describe(&e)))?;
+    crate::timescale::setup(client, raw_retention)
+}
+
+fn create_tables(client: &mut Client) -> Result<()> {
     client.batch_execute(
         "
         set client_min_messages = warning;
@@ -59,27 +78,6 @@ pub fn migrate(client: &mut Client) -> Result<()> {
             primary key (fan_id, ts)
         );
         create index if not exists fan_samples_ts on fan_samples (ts);
-        create table if not exists sensor_minutes (
-            bucket timestamptz not null,
-            sensor_id text not null,
-            avg_celsius real not null,
-            min_celsius real not null,
-            max_celsius real not null,
-            samples integer not null,
-            primary key (sensor_id, bucket)
-        );
-        create index if not exists sensor_minutes_bucket on sensor_minutes (bucket);
-        create table if not exists fan_minutes (
-            bucket timestamptz not null,
-            fan_id text not null,
-            avg_duty real not null,
-            avg_rpm real,
-            min_rpm integer,
-            max_rpm integer,
-            samples integer not null,
-            primary key (fan_id, bucket)
-        );
-        create index if not exists fan_minutes_bucket on fan_minutes (bucket);
         create table if not exists drives (
             wwn text primary key,
             passed boolean,
@@ -132,25 +130,6 @@ pub fn migrate(client: &mut Client) -> Result<()> {
             primary key (ups, ts)
         );
         create index if not exists ups_samples_ts on ups_samples (ts);
-        create table if not exists ups_minutes (
-            bucket timestamptz not null,
-            ups text not null,
-            avg_charge real,
-            min_charge real,
-            avg_runtime_seconds real,
-            min_runtime_seconds integer,
-            avg_load real,
-            max_load real,
-            avg_real_power real,
-            avg_input_voltage real,
-            min_input_voltage real,
-            max_input_voltage real,
-            avg_output_voltage real,
-            on_battery_samples integer not null,
-            samples integer not null,
-            primary key (ups, bucket)
-        );
-        create index if not exists ups_minutes_bucket on ups_minutes (bucket);
         ",
     )
 }
@@ -270,59 +249,6 @@ pub fn insert_ups_sample(client: &mut Client, reading: &UpsReading) -> Result<()
             &real(reading.battery_voltage),
         ],
     )?;
-    Ok(())
-}
-
-/// Folds complete minutes of raw samples since `since` (RFC 3339) into the *_minutes tables.
-/// Safe to re-run over the same window: it overwrites those buckets with the same result.
-pub fn roll_up(client: &mut Client, since: &str) -> Result<()> {
-    client.execute(
-        "insert into sensor_minutes (bucket, sensor_id, avg_celsius, min_celsius, max_celsius, samples)
-         select date_trunc('minute', ts), sensor_id, avg(celsius), min(celsius), max(celsius), count(*)
-         from sensor_samples
-         where ts >= date_trunc('minute', $1::text::timestamptz) and ts < date_trunc('minute', now())
-         group by 1, 2
-         on conflict (sensor_id, bucket) do update set
-             avg_celsius = excluded.avg_celsius, min_celsius = excluded.min_celsius,
-             max_celsius = excluded.max_celsius, samples = excluded.samples",
-        &[&since],
-    )?;
-    client.execute(
-        "insert into fan_minutes (bucket, fan_id, avg_duty, avg_rpm, min_rpm, max_rpm, samples)
-         select date_trunc('minute', ts), fan_id, avg(duty_percent), avg(rpm), min(rpm), max(rpm), count(*)
-         from fan_samples
-         where ts >= date_trunc('minute', $1::text::timestamptz) and ts < date_trunc('minute', now())
-         group by 1, 2
-         on conflict (fan_id, bucket) do update set
-             avg_duty = excluded.avg_duty, avg_rpm = excluded.avg_rpm,
-             min_rpm = excluded.min_rpm, max_rpm = excluded.max_rpm, samples = excluded.samples",
-        &[&since],
-    )?;
-    client.execute(
-        "insert into ups_minutes (bucket, ups, avg_charge, min_charge, avg_runtime_seconds, min_runtime_seconds, avg_load, max_load,
-             avg_real_power, avg_input_voltage, min_input_voltage, max_input_voltage, avg_output_voltage, on_battery_samples, samples)
-         select date_trunc('minute', ts), ups, avg(charge), min(charge), avg(runtime_seconds), min(runtime_seconds), avg(load), max(load),
-             avg(real_power), avg(input_voltage), min(input_voltage), max(input_voltage), avg(output_voltage),
-             count(*) filter (where ' ' || status || ' ' like '% OB %'), count(*)
-         from ups_samples
-         where ts >= date_trunc('minute', $1::text::timestamptz) and ts < date_trunc('minute', now())
-         group by 1, 2
-         on conflict (ups, bucket) do update set
-             avg_charge = excluded.avg_charge, min_charge = excluded.min_charge,
-             avg_runtime_seconds = excluded.avg_runtime_seconds, min_runtime_seconds = excluded.min_runtime_seconds,
-             avg_load = excluded.avg_load, max_load = excluded.max_load, avg_real_power = excluded.avg_real_power,
-             avg_input_voltage = excluded.avg_input_voltage, min_input_voltage = excluded.min_input_voltage,
-             max_input_voltage = excluded.max_input_voltage, avg_output_voltage = excluded.avg_output_voltage,
-             on_battery_samples = excluded.on_battery_samples, samples = excluded.samples",
-        &[&since],
-    )?;
-    Ok(())
-}
-
-pub fn prune_raw_samples(client: &mut Client, older_than: &str) -> Result<()> {
-    for table in ["sensor_samples", "fan_samples", "ups_samples"] {
-        client.execute(&format!("delete from {table} where ts < $1::text::timestamptz"), &[&older_than])?;
-    }
     Ok(())
 }
 
