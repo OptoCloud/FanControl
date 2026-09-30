@@ -1,8 +1,8 @@
-// A stand-in for vigild, for developing vigil-web without the hardware
+// A stand-in for vigild, for developing vigil-core and vigil-web without the hardware
 // (and on Windows, where the real daemon's unix socket isn't an option). Serves the same
 // GET /status and GET /events over TCP, with plausibly wandering temperatures.
 //
-//   node scripts/mock-daemon.mjs [port]            then run the app with VIGILD_URL=http://127.0.0.1:5178
+//   node dev/mock-vigild.mjs [port]            then run vigil-core with VIGILD_URL=http://127.0.0.1:5178
 //
 // Type a letter + Enter to inject a fault: s = stall a fan, g = GPU unreadable,
 // u = loop unhealthy, r = grow a drive's reallocated count, c = clear all faults.

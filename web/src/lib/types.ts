@@ -1,5 +1,5 @@
-// The daemon's snapshot contract (see the API section of the repo README). Field names are
-// the daemon's; treat a change here as a change to that contract.
+// Mirrors the Rust crate vigil-protocol (protocol/src/lib.rs), which defines the JSON: vigild's
+// snapshot and vigil-core's live stream. Treat a change there as a change here, and back.
 
 export type SensorCategory = 'cpu' | 'boardAmbient' | 'drive' | 'gpu' | 'memory' | 'hba';
 
@@ -78,6 +78,8 @@ export interface UpsReading {
 export interface UpsState {
 	/** False when NUT isn't configured (no NUT_HOST): the UPS section is hidden, not shown as broken. */
 	enabled: boolean;
+	/** The UPS's name on upsd, which its history is stored under. */
+	name: string;
 	/** The latest reading, or null while upsd can't be reached or has no fresh data for the UPS. */
 	reading: UpsReading | null;
 	/** Why there is no reading: a connection error, or upsd's own (DATA-STALE, DRIVER-NOT-CONNECTED, UNKNOWN-UPS). */
@@ -111,13 +113,17 @@ export interface EventRecord {
 	message: string;
 }
 
-/** What a browser receives over /api/live. */
+/**
+ * The live stream: what vigil-core sends on /live, and what vigil-web relays to the browser on
+ * /api/live. `core` is vigil-web's own addition: whether it can reach vigil-core.
+ */
 export type LiveMessage =
 	| { type: 'snapshot'; snapshot: Snapshot }
 	| { type: 'daemon'; connected: boolean }
 	| { type: 'event'; event: EventRecord }
 	| { type: 'drives'; drives: DriveState[] }
-	| { type: 'ups'; ups: UpsState };
+	| { type: 'ups'; ups: UpsState }
+	| { type: 'core'; connected: boolean };
 
 export type RangeKey = '1h' | '6h' | '24h' | '7d' | '30d';
 

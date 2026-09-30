@@ -1,0 +1,19 @@
+[Unit]
+Description=vigil-core: reads vigild and the UPS, records history, raises alerts
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Needs read access to vigild's socket: its group must be the socket's (socket_gid in vigild.toml).
+User=vigil
+EnvironmentFile=/etc/vigil-core.env
+ExecStart=/opt/vigil-core/vigil-core
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

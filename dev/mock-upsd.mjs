@@ -1,8 +1,8 @@
-// A stand-in for NUT's upsd, for developing the dashboard without the UPS. Answers
+// A stand-in for NUT's upsd, for developing vigil-core without the UPS. Answers
 // LIST VAR for one UPS ("apc") with the variables usbhid-ups reports for orion's
 // APC Smart-UPS 1000, over the real line protocol.
 //
-//   node scripts/mock-nut.mjs [port]            then run the app with NUT_HOST=127.0.0.1 NUT_PORT=3493
+//   node dev/mock-upsd.mjs [port]            then run vigil-core with NUT_HOST=127.0.0.1 NUT_PORT=3493
 //
 // Type a letter + Enter: b = mains lost (on battery), l = low battery, r = replace battery,
 // s = driver loses the UPS (ERR DATA-STALE), c = back to normal.

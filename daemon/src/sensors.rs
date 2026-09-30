@@ -16,53 +16,7 @@
 //! is this disk doing" (health, history); the port answers "how is this spot doing" (airflow).
 
 use crate::sysfs::{self, SysFs};
-use serde::Serialize;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum SensorCategory {
-    Cpu,
-    BoardAmbient,
-    Drive,
-    Gpu,
-    Memory,
-    Hba,
-}
-
-/// A single point-in-time reading. `id` is a stable logical name ("cpu", "drive:{wwn}"),
-/// never a raw hwmonN path.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SensorReading {
-    pub id: String,
-    pub category: SensorCategory,
-    pub label: String,
-    pub celsius_or_null: Option<f64>,
-    pub source_path: String,
-    pub is_available: bool,
-    /// Drives only: the by-path name of the port the drive is plugged into. Null for every
-    /// other sensor, and for a drive when no by-path link points at it.
-    pub port: Option<String>,
-}
-
-impl SensorReading {
-    pub fn new(id: &str, category: SensorCategory, label: &str, celsius: Option<f64>, source_path: &str) -> Self {
-        Self {
-            id: id.to_owned(),
-            category,
-            label: label.to_owned(),
-            celsius_or_null: celsius,
-            source_path: source_path.to_owned(),
-            is_available: celsius.is_some(),
-            port: None,
-        }
-    }
-
-    pub fn with_port(mut self, port: Option<String>) -> Self {
-        self.port = port;
-        self
-    }
-}
+pub use vigil_protocol::{SensorCategory, SensorReading};
 
 /// Declarative description of one sensor (or sensor family) to pull out of hwmon. This is
 /// the whitelist: only sensors described here are ever read, so unconnected or meaningless

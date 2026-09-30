@@ -1,0 +1,13 @@
+[package]
+name = "vigil-protocol"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "The types that cross vigil's process boundaries: vigild's snapshot and vigil-core's live stream"
+publish.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"

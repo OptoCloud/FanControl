@@ -16,36 +16,12 @@
 use crate::config::DriveHealthConfig;
 use crate::process;
 use crate::sensors::ResolvedSensor;
-use serde::Serialize;
 use serde_json::Value;
 use std::time::Duration;
+pub use vigil_protocol::DriveHealth;
 
 const ATA_ATTRIBUTE_REALLOCATED_SECTOR_COUNT: u64 = 5;
 const ATA_ATTRIBUTE_CURRENT_PENDING_SECTOR_COUNT: u64 = 197;
-
-/// `passed` mirrors smartctl's normalized overall-health flag, which works the same way
-/// for ATA and SCSI/SAS drives. Everything else is ATA-attribute-specific and is simply
-/// absent for a drive that doesn't report it (SAS drives, attribute 197 on most SSDs).
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DriveHealth {
-    /// Stable drive identity (WWN), NOT the live sdX letter.
-    pub device_name: String,
-    /// The by-path name of the port the drive was plugged into for this poll, if known.
-    pub port: Option<String>,
-    pub passed: Option<bool>,
-    pub reallocated_sector_count: Option<u64>,
-    pub pending_sector_count: Option<u64>,
-    pub power_on_hours: Option<u64>,
-    /// The live /dev/sdX path smartctl was run against for this read. Not stable, informational only.
-    pub source_path: String,
-    /// False when the drive was asleep (so deliberately not queried), or smartctl was
-    /// missing, timed out, or printed something unusable.
-    pub is_available: bool,
-    /// When this poll ran (RFC 3339, UTC). Health is polled on a much slower cycle than
-    /// the snapshot it is embedded in.
-    pub as_of: String,
-}
 
 pub fn parse(stable_id: &str, json: &str, source_path: &str, as_of: &str) -> DriveHealth {
     let root: Value = serde_json::from_str(json).unwrap_or(Value::Null);

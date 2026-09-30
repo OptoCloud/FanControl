@@ -1,0 +1,14 @@
+[package]
+name = "vigil-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "vigil's orchestrator: reads vigild and the UPS, records history, raises alerts, streams the live state to vigil-web"
+publish.workspace = true
+
+[dependencies]
+vigil-protocol = { path = "../protocol" }
+serde_json = "1"
+# The blocking client: vigil-core is plain threads and channels, like vigild. It runs a small
+# tokio runtime inside, which never leaks into this code.
+postgres = "0.19"

@@ -1,14 +1,16 @@
-import { getRuntime } from '$lib/server/runtime';
+import { getCore } from '$lib/server/core';
+import { recentEvents } from '$lib/server/db';
 import type { PageServerLoad } from './$types';
 
 // Everything the page needs to render complete on first paint, before its live stream connects.
 export const load: PageServerLoad = async () => {
-	const runtime = getRuntime();
+	const core = getCore();
 	return {
-		snapshot: runtime.latest,
-		daemonConnected: runtime.daemonConnected,
-		drives: runtime.driveList,
-		ups: runtime.ups,
-		events: await runtime.recentEvents(50).catch(() => [])
+		coreConnected: core.coreConnected,
+		snapshot: core.snapshot,
+		daemonConnected: core.daemonConnected,
+		drives: core.drives,
+		ups: core.ups,
+		events: await recentEvents(core.sql, 50).catch(() => [])
 	};
 };

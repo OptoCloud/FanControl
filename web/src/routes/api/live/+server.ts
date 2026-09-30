@@ -1,11 +1,11 @@
-import { getRuntime } from '$lib/server/runtime';
+import { getCore } from '$lib/server/core';
 import type { LiveMessage } from '$lib/types';
 import type { RequestHandler } from './$types';
 
-// Server-Sent Events to the browser: the daemon's snapshots as they arrive, plus this
-// server's own additions (daemon reachability, new events, last-good drive health, the UPS).
+// Server-Sent Events to the browser: vigil-core's live stream as vigil-web mirrors it, plus
+// whether vigil-web can reach vigil-core at all.
 export const GET: RequestHandler = () => {
-	const runtime = getRuntime();
+	const core = getCore();
 	const encoder = new TextEncoder();
 	let unsubscribe = () => {};
 	let keepalive: NodeJS.Timeout;
@@ -15,12 +15,9 @@ export const GET: RequestHandler = () => {
 			const send = (message: LiveMessage) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(message)}\n\n`));
 
 			// Current state first, so a new tab doesn't sit empty until the next poll.
-			send({ type: 'daemon', connected: runtime.daemonConnected });
-			if (runtime.latest) send({ type: 'snapshot', snapshot: runtime.latest });
-			send({ type: 'drives', drives: runtime.driveList });
-			send({ type: 'ups', ups: runtime.ups });
+			for (const message of core.currentState) send(message);
 
-			unsubscribe = runtime.subscribe(send);
+			unsubscribe = core.subscribe(send);
 			keepalive = setInterval(() => controller.enqueue(encoder.encode(': keepalive\n\n')), 20_000);
 		},
 		cancel() {

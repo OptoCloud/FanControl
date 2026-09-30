@@ -1,5 +1,5 @@
-# Postgres for local development only (the real deployment runs Postgres inside the LXC).
-#   docker compose -f docker-compose.dev.yml up -d
+# Postgres for local development only (production uses the shared Postgres in CT 300).
+#   docker compose -f dev/docker-compose.yml up -d
 #   DATABASE_URL=postgres://vigil:vigil@127.0.0.1:5433/vigil
 services:
   postgres:

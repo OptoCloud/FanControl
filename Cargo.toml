@@ -1,0 +1,17 @@
+[workspace]
+members = ["protocol", "daemon", "core"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+# Deliberately NOT "abort": a vigild panic has to unwind through FanSafetyGuard's Drop so
+# every fan channel is handed back to automatic control on the way out.
+panic = "unwind"

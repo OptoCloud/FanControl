@@ -17,6 +17,8 @@
 	// svelte-ignore state_referenced_locally
 	let snapshot = $state(data.snapshot);
 	// svelte-ignore state_referenced_locally
+	let coreConnected = $state(data.coreConnected);
+	// svelte-ignore state_referenced_locally
 	let daemonConnected = $state(data.daemonConnected);
 	// svelte-ignore state_referenced_locally
 	let drives = $state(data.drives);
@@ -69,6 +71,7 @@
 			else if (live.type === 'drives') drives = live.drives;
 			else if (live.type === 'event') events = [live.event, ...events].slice(0, 100);
 			else if (live.type === 'ups') ups = live.ups;
+			else if (live.type === 'core') coreConnected = live.connected;
 		};
 
 		const clock = setInterval(() => (now = Date.now()), 1000);
@@ -180,7 +183,8 @@
 
 	const status = $derived.by((): { level: 'good' | 'warning' | 'critical'; label: string; detail: string } => {
 		if (!streamConnected) return { level: 'warning', label: 'Connecting', detail: 'Waiting for the live stream from the dashboard server.' };
-		if (!daemonConnected) return { level: 'critical', label: 'Daemon unreachable', detail: 'The dashboard server cannot reach vigild. If it is not running, the fans are on BIOS control.' };
+		if (!coreConnected) return { level: 'critical', label: 'vigil-core unreachable', detail: 'The dashboard cannot reach vigil-core, so nothing live is shown, and history and alerts may be paused with it.' };
+		if (!daemonConnected) return { level: 'critical', label: 'Daemon unreachable', detail: 'vigil-core cannot reach vigild. If it is not running, the fans are on BIOS control.' };
 		if (!snapshot) return { level: 'warning', label: 'Waiting for data', detail: 'Connected, but no snapshot has arrived yet.' };
 		if (snapshotAge > 15_000) return { level: 'warning', label: 'Stale', detail: `The last snapshot is ${relativeTime(snapshot.timestampUtc, now)} old.` };
 		if (!snapshot.controlLoopHealthy) return { level: 'critical', label: 'Control loop unhealthy', detail: 'A fan channel could not be driven, or the loop has stopped polling.' };

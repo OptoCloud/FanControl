@@ -3,46 +3,12 @@
 
 use crate::log;
 use crate::sysfs::{self, SysFs};
-use serde::Serialize;
 use std::collections::HashMap;
 use std::io;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-
-/// Values accepted by nct6775/nct6798's pwmN_enable sysfs attribute.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum PwmMode {
-    /// Fans jump to full speed. Never written by this daemon.
-    Disabled = 0,
-    Manual = 1,
-    ThermalCruise = 2,
-    SpeedCruise = 3,
-    /// NCT6775F only; listed so a read-back of it isn't reported as unknown.
-    SmartFanIII = 4,
-    /// BIOS "Smart Fan IV": the multi-slope curve mode the board ships in.
-    SmartFanIV = 5,
-}
-
-impl PwmMode {
-    fn from_raw(raw: &str) -> Option<Self> {
-        match raw.parse::<u8>().ok()? {
-            0 => Some(Self::Disabled),
-            1 => Some(Self::Manual),
-            2 => Some(Self::ThermalCruise),
-            3 => Some(Self::SpeedCruise),
-            4 => Some(Self::SmartFanIII),
-            5 => Some(Self::SmartFanIV),
-            _ => None,
-        }
-    }
-
-    /// True for the modes where the chip itself regulates the fan.
-    fn is_automatic(self) -> bool {
-        !matches!(self, Self::Disabled | Self::Manual)
-    }
-}
+pub use vigil_protocol::{FanStatus, PwmMode};
 
 /// One physical fan header, addressed by its sysfs pwmN attribute set. The mapping from
 /// pwmN to a silkscreen header is board-specific and NOT guessable: it has to be verified
@@ -69,18 +35,6 @@ impl FanChannel {
     pub fn tach_path(&self) -> String {
         sysfs::join(&[&self.chip_dir, &format!("fan{}_input", self.index)])
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FanStatus {
-    pub id: String,
-    pub duty_percent: u8,
-    pub rpm: Option<u32>,
-    /// None if pwmN_enable couldn't be read or held a value this daemon doesn't know.
-    pub mode: Option<PwmMode>,
-    /// See StallDetector.
-    pub stalled: bool,
 }
 
 pub trait FanController: Send + Sync {

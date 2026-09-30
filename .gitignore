@@ -3,5 +3,5 @@
 *.zip
 
 # Rust build output
-daemon/target/
+target/
 *.tar.gz

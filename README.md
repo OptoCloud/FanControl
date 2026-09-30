@@ -1,16 +1,26 @@
 # vigil
 
-Looks after the hardware of a Linux (Proxmox) NAS host. Two parts:
+Looks after the hardware of a Linux (Proxmox) NAS host. Three parts, one job
+each:
 
 - **`vigild`** (`daemon/`), the hardware daemon. It reads every temperature
   on the host and each drive's SMART health, and drives the fans, because BIOS
   Smart Fan curves have no idea what an LSI HBA, a drive array, or a GPU are
   actually doing. It runs as root on the host and is the only part that
   changes anything.
-- **`vigil-web`** (`web/`), the dashboard. It records `vigild`'s readings and
-  the UPS into history, shows them live and raises alerts. It only reads.
+- **`vigil-core`** (`core/`), the orchestrator. It reads `vigild` and the
+  UPS, records history in Postgres, raises alerts, and streams the live state.
+- **`vigil-web`** (`web/`), the dashboard. It shows `vigil-core`'s live
+  stream and the history. It only reads.
 
-Most of this README is `vigild`; [vigil-web](#vigil-web) has its own section.
+```
+vigild (host, root) ──socket──┐
+                              ├──> vigil-core ──> Postgres ──> vigil-web ──> browser
+upsd (NUT, host) ─────TCP─────┘         └── live stream (loopback) ──┘
+```
+
+Most of this README is `vigild`; [vigil-core](#vigil-core) and
+[vigil-web](#vigil-web) have their own sections.
 
 ## Why
 
@@ -154,14 +164,22 @@ capped by `api.max_clients`; past that, new ones get `503`.
 
 ## Project layout
 
-- `daemon/`: the Rust daemon. Hardware-independent logic (curves, config
+A Cargo workspace (`daemon/`, `core/`, `protocol/`) plus the SvelteKit app.
+
+- `protocol/`: `vigil-protocol`, the types that cross a process boundary,
+  defined once: `vigild`'s snapshot and `vigil-core`'s live stream.
+  `web/src/lib/types.ts` mirrors them for the browser.
+- `daemon/`: `vigild`. Hardware-independent logic (curves, config
   validation, the HBA wire format, SMART parsing, the safety guard, the
   control loop itself) is separated from the thin platform plumbing around it
   and unit-tested against an in-memory sysfs.
 - `deploy/`: `vigild`'s systemd unit, config, `tmpfiles.d` and
   `modules-load.d` entries, `release-fans.sh`, and the header-mapping helper
   scripts.
+- `core/`: `vigil-core`, see [below](#vigil-core).
 - `web/`: `vigil-web`, see [below](#vigil-web).
+- `dev/`: stand-ins for `vigild` and upsd, and a Postgres, for developing
+  without the hardware.
 
 ## Build and test
 
@@ -170,11 +188,12 @@ is needed: the musl target ships its own C runtime and links with Rust's
 bundled LLD.
 
 ```bash
-cd daemon
-cargo test                                                   # unit tests, any OS
+cargo test --workspace                                       # unit tests, any OS
 rustup target add x86_64-unknown-linux-musl                  # once
-cargo build --release --target x86_64-unknown-linux-musl     # static Linux binary
+cargo build --release --target x86_64-unknown-linux-musl     # static vigild and vigil-core
 ```
+
+Both binaries land in `target/x86_64-unknown-linux-musl/release/`.
 
 `daemon/scripts/integration-test.sh <binary>` runs that real Linux binary end
 to end against a fake sysfs tree with stand-in `nvidia-smi`/`smartctl`: the
@@ -183,7 +202,7 @@ on a vanished sensor, and the fans being handed back on SIGTERM. It needs no
 hardware and no root, so it runs under WSL or in CI:
 
 ```powershell
-wsl -e bash /mnt/e/path/to/daemon/scripts/integration-test.sh /mnt/e/path/to/daemon/target/x86_64-unknown-linux-musl/release/vigild
+wsl -e bash /mnt/e/path/to/daemon/scripts/integration-test.sh /mnt/e/path/to/target/x86_64-unknown-linux-musl/release/vigild
 ```
 
 Neither covers the `/dev/mpt3ctl` ioctl, real `nvidia-smi`/`smartctl` output
@@ -199,7 +218,7 @@ reported unavailable.
 
 | File | Goes to |
 |---|---|
-| `daemon/target/x86_64-unknown-linux-musl/release/vigild` | `/opt/vigil/vigild` (`chmod +x`) |
+| `target/x86_64-unknown-linux-musl/release/vigild` | `/opt/vigil/vigild` (`chmod +x`) |
 | `deploy/release-fans.sh` | `/opt/vigil/release-fans.sh` |
 | `deploy/vigild.toml` | `/etc/vigil/vigild.toml` |
 | `deploy/vigild.service` | `/etc/systemd/system/vigild.service` |
@@ -316,31 +335,52 @@ Known accepted quirks:
   possible, but several (especially `lsi-cooling` and `drive-cage`) are still
   based on limited data. Revisit once real-load history exists.
 
+## vigil-core
+
+`vigil-core` (`core/`) is a static Rust binary run in an unprivileged LXC,
+beside `vigil-web`. It is plain threads and channels like `vigild`, with one
+thread that owns all state.
+
+- It keeps the one connection to `vigild`'s socket (the socket's directory is
+  bind-mounted in) and one to NUT's `upsd` over TCP, polling `LIST VAR` every
+  5s like `upsmon`. Reads on upsd are anonymous, so it needs no NUT account.
+  It only watches: `upsmon` on the host still owns the shutdown.
+- It writes history to Postgres (10s samples for 7 days, 1-minute rollups
+  forever) and owns the schema. A drive's temperature is stored twice: as
+  `drive:<wwn>`, the disk's own trend wherever it's plugged in, and as
+  `port:<by-path>`, the bay's trend whichever disk is in it. `bay_occupants`
+  records which disk sat in which bay and when.
+- It owns alerting: stalled fans, unreadable or vanished sensors, SMART
+  changes, `vigild` outages, and the UPS on battery, low, in forced shutdown,
+  needing a battery, overloaded or not protecting. Events go to Postgres and,
+  optionally, ntfy (sent with `curl`, so no TLS stack is linked in).
+- It streams the live state on `GET /live` (Server-Sent Events: the current
+  state on connect, then every change), on loopback only.
+
+It is configured from the environment: `VIGILD_SOCKET`, `DATABASE_URL`,
+`NUT_HOST`/`NUT_PORT`/`NUT_UPS`, `NTFY_URL`, `CORE_PORT` and a few more; see
+`core/deploy/vigil-core.env`. Without `NUT_HOST` the UPS is left out. Without
+a database the live stream still works, and it keeps retrying.
+
 ## vigil-web
 
-`vigil-web` (`web/`) is a SvelteKit app run under Node in an
-unprivileged LXC. It keeps the one connection to `vigild`'s socket, writes
-history to Postgres (10s samples for 7 days, 1-minute rollups forever), fans
-live data out to browsers over SSE, and owns alerting (stalled fans, unreadable
-or vanished sensors, SMART changes, power events, daemon outages; optional ntfy
-push).
+`vigil-web` (`web/`) is a SvelteKit app run under Node beside `vigil-core`.
+It relays `vigil-core`'s live stream to browsers and reads history and the
+event log straight from Postgres. It writes nothing. Configured by `CORE_URL`
+and `DATABASE_URL`; `web/deploy/package.sh` builds the deployable tarball.
 
-It also polls the UPS from NUT's `upsd` over TCP (`NUT_HOST`, `NUT_PORT`,
-`NUT_UPS`; every 5s, like `upsmon`). Reads on upsd are anonymous, so it needs no
-NUT account. Charge, load, runtime and voltages go into the same history, and on
-battery, low battery, forced shutdown, replace battery and overload become
-events. It only watches: `upsmon` on the host still owns the shutdown. Leave
-`NUT_HOST` unset to hide the UPS.
+## Development
 
-A drive's temperature is stored twice: as `drive:<wwn>`, the disk's own trend
-wherever it's plugged in, and as `port:<by-path>`, the bay's trend whichever
-disk is in it. `bay_occupants` records which disk sat in which bay and when,
-and the drive table switches between the two views. See
-`web/deploy/` for the unit and env template, `web/deploy/package.sh`
-to build the deployable tarball. To develop without the hardware,
-`web/scripts/mock-daemon.mjs` and `web/scripts/mock-nut.mjs` stand
-in for `vigild` and upsd, and `web/docker-compose.dev.yml` runs
-Postgres.
+Without the hardware, `dev/mock-vigild.mjs` and `dev/mock-upsd.mjs` stand in
+for `vigild` and upsd (type a letter and Enter to inject a fault), and
+`dev/docker-compose.yml` runs Postgres:
+
+```bash
+docker compose -f dev/docker-compose.yml up -d
+node dev/mock-vigild.mjs & node dev/mock-upsd.mjs &
+set -a; . core/.env.example; set +a; cargo run -p vigil-core
+cd web && npm run dev
+```
 
 ## License
 
