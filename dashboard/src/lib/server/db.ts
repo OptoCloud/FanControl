@@ -2,7 +2,7 @@
 // no history at all, so this database is the only place any of it lives.
 
 import postgres from 'postgres';
-import type { DriveState, EventRecord, SensorReading, Severity, Snapshot } from '$lib/types';
+import type { DriveState, EventRecord, SensorReading, Severity, Snapshot, UpsReading } from '$lib/types';
 
 export type Sql = postgres.Sql;
 
@@ -119,6 +119,52 @@ export async function migrate(sql: Sql): Promise<void> {
 			message text not null
 		)`;
 	await sql`create index if not exists events_ts on events (ts desc)`;
+
+	// The UPS, from NUT. Wide rather than narrow: its handful of metrics always arrive together.
+	await sql`
+		create table if not exists ups_samples (
+			ts timestamptz not null,
+			ups text not null,
+			status text not null,
+			charge real,
+			runtime_seconds integer,
+			load real,
+			real_power real,
+			input_voltage real,
+			output_voltage real,
+			battery_voltage real,
+			primary key (ups, ts)
+		)`;
+	await sql`create index if not exists ups_samples_ts on ups_samples (ts)`;
+	await sql`
+		create table if not exists ups_minutes (
+			bucket timestamptz not null,
+			ups text not null,
+			avg_charge real,
+			min_charge real,
+			avg_runtime_seconds real,
+			min_runtime_seconds integer,
+			avg_load real,
+			max_load real,
+			avg_real_power real,
+			avg_input_voltage real,
+			min_input_voltage real,
+			max_input_voltage real,
+			avg_output_voltage real,
+			on_battery_samples integer not null,
+			samples integer not null,
+			primary key (ups, bucket)
+		)`;
+	await sql`create index if not exists ups_minutes_bucket on ups_minutes (bucket)`;
+}
+
+export async function insertUpsSample(sql: Sql, reading: UpsReading): Promise<void> {
+	await sql`
+		insert into ups_samples (ts, ups, status, charge, runtime_seconds, load, real_power, input_voltage, output_voltage, battery_voltage)
+		values (${reading.timestampUtc}, ${reading.name}, ${reading.status.join(' ')}, ${reading.batteryCharge},
+			${reading.batteryRuntimeSeconds === null ? null : Math.round(reading.batteryRuntimeSeconds)}, ${reading.load},
+			${reading.realPower}, ${reading.inputVoltage}, ${reading.outputVoltage}, ${reading.batteryVoltage})
+		on conflict do nothing`;
 }
 
 export async function insertSamples(sql: Sql, snapshot: Snapshot): Promise<void> {
@@ -193,11 +239,29 @@ export async function rollUp(sql: Sql, since: Date): Promise<void> {
 		on conflict (fan_id, bucket) do update set
 			avg_duty = excluded.avg_duty, avg_rpm = excluded.avg_rpm,
 			min_rpm = excluded.min_rpm, max_rpm = excluded.max_rpm, samples = excluded.samples`;
+
+	await sql`
+		insert into ups_minutes (bucket, ups, avg_charge, min_charge, avg_runtime_seconds, min_runtime_seconds, avg_load, max_load,
+			avg_real_power, avg_input_voltage, min_input_voltage, max_input_voltage, avg_output_voltage, on_battery_samples, samples)
+		select date_trunc('minute', ts), ups, avg(charge), min(charge), avg(runtime_seconds), min(runtime_seconds), avg(load), max(load),
+			avg(real_power), avg(input_voltage), min(input_voltage), max(input_voltage), avg(output_voltage),
+			count(*) filter (where ' ' || status || ' ' like '% OB %'), count(*)
+		from ups_samples
+		where ts >= date_trunc('minute', ${since}::timestamptz) and ts < date_trunc('minute', now())
+		group by 1, 2
+		on conflict (ups, bucket) do update set
+			avg_charge = excluded.avg_charge, min_charge = excluded.min_charge,
+			avg_runtime_seconds = excluded.avg_runtime_seconds, min_runtime_seconds = excluded.min_runtime_seconds,
+			avg_load = excluded.avg_load, max_load = excluded.max_load, avg_real_power = excluded.avg_real_power,
+			avg_input_voltage = excluded.avg_input_voltage, min_input_voltage = excluded.min_input_voltage,
+			max_input_voltage = excluded.max_input_voltage, avg_output_voltage = excluded.avg_output_voltage,
+			on_battery_samples = excluded.on_battery_samples, samples = excluded.samples`;
 }
 
 export async function pruneRawSamples(sql: Sql, olderThan: Date): Promise<void> {
 	await sql`delete from sensor_samples where ts < ${olderThan}`;
 	await sql`delete from fan_samples where ts < ${olderThan}`;
+	await sql`delete from ups_samples where ts < ${olderThan}`;
 }
 
 export async function loadDrives(sql: Sql): Promise<DriveState[]> {

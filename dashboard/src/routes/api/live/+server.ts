@@ -3,7 +3,7 @@ import type { LiveMessage } from '$lib/types';
 import type { RequestHandler } from './$types';
 
 // Server-Sent Events to the browser: the daemon's snapshots as they arrive, plus this
-// server's own additions (daemon reachability, new events, last-good drive health).
+// server's own additions (daemon reachability, new events, last-good drive health, the UPS).
 export const GET: RequestHandler = () => {
 	const runtime = getRuntime();
 	const encoder = new TextEncoder();
@@ -18,6 +18,7 @@ export const GET: RequestHandler = () => {
 			send({ type: 'daemon', connected: runtime.daemonConnected });
 			if (runtime.latest) send({ type: 'snapshot', snapshot: runtime.latest });
 			send({ type: 'drives', drives: runtime.driveList });
+			send({ type: 'ups', ups: runtime.ups });
 
 			unsubscribe = runtime.subscribe(send);
 			keepalive = setInterval(() => controller.enqueue(encoder.encode(': keepalive\n\n')), 20_000);

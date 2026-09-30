@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { DriveHealth, DriveState, FanStatus, SensorReading, Snapshot } from '$lib/types';
-import { ConditionTracker, conditionsIn, diffDriveHealth } from './alerts';
+import type { DriveHealth, DriveState, FanStatus, SensorReading, Snapshot, UpsReading, UpsState } from '$lib/types';
+import { ConditionTracker, conditionsIn, diffDriveHealth, upsConditions } from './alerts';
 
 const fan = (overrides: Partial<FanStatus> = {}): FanStatus => ({ id: 'drive-cage', dutyPercent: 65, rpm: 1200, mode: 'manual', stalled: false, ...overrides });
 
@@ -167,5 +167,51 @@ describe('diffDriveHealth', () => {
 		expect(diffDriveHealth(undefined, failed).events).toHaveLength(1);
 		expect(diffDriveHealth(stateOf(failed), failed).events).toEqual([]);
 		expect(diffDriveHealth(stateOf(failed), health()).events[0].severity).toBe('info');
+	});
+});
+
+describe('upsConditions', () => {
+	const reading = (status: string[], overrides: Partial<UpsReading> = {}): UpsReading => ({
+		timestampUtc: '2026-01-01T00:00:00.000Z',
+		name: 'apc',
+		model: 'Smart-UPS 1000',
+		status,
+		batteryCharge: 80,
+		batteryRuntimeSeconds: 1800,
+		load: 25,
+		realPower: 168,
+		inputVoltage: 231,
+		outputVoltage: 230,
+		batteryVoltage: 27.3,
+		variables: {},
+		...overrides
+	});
+	const ups = (r: UpsReading | null, error: string | null = null): UpsState => ({ enabled: true, reading: r, error });
+
+	it('finds nothing wrong with a UPS that is online', () => {
+		expect(upsConditions(ups(reading(['OL', 'CHRG'])), 0).size).toBe(0);
+	});
+
+	it('flags on battery, low battery and a battery to replace', () => {
+		const conditions = upsConditions(ups(reading(['OB', 'DISCHRG', 'LB', 'RB'], { batteryCharge: 9, batteryRuntimeSeconds: 150 })), 0);
+		expect([...conditions.keys()].sort()).toEqual(['ups-low-battery', 'ups-on-battery', 'ups-replace-battery']);
+		expect(conditions.get('ups-low-battery')?.severity).toBe('critical');
+		expect(conditions.get('ups-on-battery')?.message).toContain('9%');
+		expect(conditions.get('ups-on-battery')?.message).toContain('3 min');
+	});
+
+	it('only calls an unreadable UPS a problem once it has lasted 30 seconds', () => {
+		expect(upsConditions(ups(null, 'upsd: DATA-STALE'), 10_000).size).toBe(0);
+		expect(upsConditions(ups(null, 'upsd: DATA-STALE'), 30_000).get('ups-unreadable')?.message).toContain('DATA-STALE');
+	});
+
+	it('reports nothing when NUT is not configured', () => {
+		expect(upsConditions({ enabled: false, reading: null, error: null }, 60_000).size).toBe(0);
+	});
+
+	it('raises on battery on the first poll and clears on the first poll back online', () => {
+		const tracker = new ConditionTracker(1);
+		expect(tracker.update(upsConditions(ups(reading(['OB'])), 0)).map((e) => e.severity)).toEqual(['warning']);
+		expect(tracker.update(upsConditions(ups(reading(['OL'])), 0)).map((e) => e.message)).toEqual(['Mains power is back: the UPS is online again.']);
 	});
 });

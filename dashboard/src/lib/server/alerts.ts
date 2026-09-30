@@ -1,9 +1,9 @@
 // Turns the daemon's stream of snapshots into discrete events ("drive-cage stalled",
-// "reallocated sectors grew"). The daemon deliberately reports only the present; noticing
+// "reallocated sectors grew", "on battery"). The daemon deliberately reports only the present; noticing
 // that something CHANGED needs memory, and that lives here. Everything in this file is
 // pure, so it is fully unit-tested; runtime.ts wires it to the database and notifications.
 
-import type { DriveHealth, DriveState, Severity, Snapshot } from '$lib/types';
+import type { DriveHealth, DriveState, Severity, Snapshot, UpsState } from '$lib/types';
 
 export interface NewEvent {
 	severity: Severity;
@@ -68,6 +68,76 @@ export function conditionsIn(snapshot: Snapshot, knownSensorIds: ReadonlySet<str
 				cleared: `Sensor '${id}' is back.`
 			});
 		}
+	}
+
+	return conditions;
+}
+
+/**
+ * Every problem visible in the UPS's state. `unreachableForMs` is how long there has been no
+ * reading: a single dropped poll or an upsd restart is not worth an event, a lasting gap is.
+ */
+export function upsConditions(ups: UpsState, unreachableForMs: number): Map<string, Condition> {
+	const conditions = new Map<string, Condition>();
+	if (!ups.enabled) return conditions;
+
+	const reading = ups.reading;
+	if (!reading) {
+		if (unreachableForMs >= 30_000) {
+			conditions.set('ups-unreadable', {
+				severity: 'warning',
+				message: `The UPS can't be read (${ups.error ?? 'no reason given'}). A power cut would not show up here; orion's own upsmon is unaffected.`,
+				cleared: 'The UPS is readable again.'
+			});
+		}
+		return conditions;
+	}
+
+	const flags = new Set(reading.status);
+	const charge = reading.batteryCharge === null ? '' : ` Battery at ${Math.round(reading.batteryCharge)}%`;
+	const runtime = reading.batteryRuntimeSeconds === null ? '' : `, about ${Math.round(reading.batteryRuntimeSeconds / 60)} min of runtime left`;
+
+	if (flags.has('OB')) {
+		conditions.set('ups-on-battery', {
+			severity: 'warning',
+			message: `Mains power lost: the UPS is on battery.${charge}${runtime}.`,
+			cleared: 'Mains power is back: the UPS is online again.'
+		});
+	}
+	if (flags.has('LB')) {
+		conditions.set('ups-low-battery', {
+			severity: 'critical',
+			message: `The UPS battery is LOW.${charge}. orion's upsmon shuts the host down on this.`,
+			cleared: 'The UPS battery is no longer low.'
+		});
+	}
+	if (flags.has('FSD')) {
+		conditions.set('ups-forced-shutdown', {
+			severity: 'critical',
+			message: 'The UPS is in forced shutdown (FSD): the load is about to lose power.',
+			cleared: 'Forced shutdown is over.'
+		});
+	}
+	if (flags.has('RB')) {
+		conditions.set('ups-replace-battery', {
+			severity: 'warning',
+			message: 'The UPS reports its battery needs replacing.',
+			cleared: 'The UPS no longer reports a battery to replace.'
+		});
+	}
+	if (flags.has('OVER')) {
+		conditions.set('ups-overload', {
+			severity: 'warning',
+			message: `The UPS is overloaded${reading.load === null ? '' : ` (${Math.round(reading.load)}% load)`}.`,
+			cleared: 'The UPS is no longer overloaded.'
+		});
+	}
+	if (flags.has('BYPASS') || flags.has('OFF')) {
+		conditions.set('ups-not-protecting', {
+			severity: 'warning',
+			message: `The UPS is ${flags.has('OFF') ? 'off' : 'on bypass'}: the load is not protected.`,
+			cleared: 'The UPS is protecting the load again.'
+		});
 	}
 
 	return conditions;

@@ -48,6 +48,42 @@ export interface Snapshot {
 	controlLoopHealthy: boolean;
 }
 
+// ---- The UPS, read from NUT's upsd (not from the daemon) ----
+
+/**
+ * One poll of a UPS's variables (`LIST VAR <ups>`). The named fields are the handful the
+ * dashboard charts and alerts on; `variables` is everything upsd reported, verbatim.
+ * Any of them is null when this UPS or driver doesn't provide it.
+ */
+export interface UpsReading {
+	timestampUtc: string;
+	/** The UPS's name on upsd, e.g. "apc". */
+	name: string;
+	model: string | null;
+	/** ups.status split into its flags: OL, OB, LB, HB, RB, CHRG, DISCHRG, BYPASS, CAL, OFF, OVER, TRIM, BOOST, FSD. */
+	status: string[];
+	/** Percent. */
+	batteryCharge: number | null;
+	batteryRuntimeSeconds: number | null;
+	/** Percent of the UPS's capacity. */
+	load: number | null;
+	/** Watts, derived from load and ups.realpower.nominal when the UPS doesn't report it directly. */
+	realPower: number | null;
+	inputVoltage: number | null;
+	outputVoltage: number | null;
+	batteryVoltage: number | null;
+	variables: Record<string, string>;
+}
+
+export interface UpsState {
+	/** False when NUT isn't configured (no NUT_HOST): the UPS section is hidden, not shown as broken. */
+	enabled: boolean;
+	/** The latest reading, or null while upsd can't be reached or has no fresh data for the UPS. */
+	reading: UpsReading | null;
+	/** Why there is no reading: a connection error, or upsd's own (DATA-STALE, DRIVER-NOT-CONNECTED, UNKNOWN-UPS). */
+	error: string | null;
+}
+
 // ---- What the dashboard adds on top ----
 
 /** A drive's last GOOD health result. The daemon only reports what its latest poll saw, and a sleeping drive isn't woken, so this is what survives those gaps. */
@@ -80,7 +116,8 @@ export type LiveMessage =
 	| { type: 'snapshot'; snapshot: Snapshot }
 	| { type: 'daemon'; connected: boolean }
 	| { type: 'event'; event: EventRecord }
-	| { type: 'drives'; drives: DriveState[] };
+	| { type: 'drives'; drives: DriveState[] }
+	| { type: 'ups'; ups: UpsState };
 
 export type RangeKey = '1h' | '6h' | '24h' | '7d' | '30d';
 
@@ -109,4 +146,8 @@ export interface HistoryResponse {
 	/** Keyed by fan id. */
 	duties: Record<string, SeriesPoints>;
 	rpms: Record<string, SeriesPoints>;
+	/** The UPS: "charge" and "load" (%), "runtime" (minutes), "inputVoltage" (V). Empty without NUT. */
+	ups: Partial<Record<UpsMetric, SeriesPoints>>;
 }
+
+export type UpsMetric = 'charge' | 'load' | 'runtime' | 'inputVoltage';

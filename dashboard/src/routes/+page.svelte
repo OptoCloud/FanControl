@@ -7,7 +7,9 @@
 	import LineChart from '$lib/components/LineChart.svelte';
 	import StatTile from '$lib/components/StatTile.svelte';
 	import StatusBadge from '$lib/components/StatusBadge.svelte';
+	import UpsPanel from '$lib/components/UpsPanel.svelte';
 	import type { ChartSeries, HistoryResponse, LiveMessage, RangeKey, SensorReading, SeriesPoints } from '$lib/types';
+	import { summarizeUps } from '$lib/ups';
 
 	let { data } = $props();
 
@@ -20,6 +22,8 @@
 	let drives = $state(data.drives);
 	// svelte-ignore state_referenced_locally
 	let events = $state(data.events);
+	// svelte-ignore state_referenced_locally
+	let ups = $state(data.ups);
 	let streamConnected = $state(false);
 	let now = $state(Date.now());
 
@@ -64,6 +68,7 @@
 			else if (live.type === 'daemon') daemonConnected = live.connected;
 			else if (live.type === 'drives') drives = live.drives;
 			else if (live.type === 'event') events = [live.event, ...events].slice(0, 100);
+			else if (live.type === 'ups') ups = live.ups;
 		};
 
 		const clock = setInterval(() => (now = Date.now()), 1000);
@@ -152,6 +157,25 @@
 		}))
 	);
 
+	// Charge and load share one 0-100 axis. Runtime (minutes) and mains voltage are other units,
+	// so they get their own chart or the panel, never a second y-scale.
+	const upsReading = $derived(ups.reading);
+	const upsTime = $derived(upsReading ? new Date(upsReading.timestampUtc).getTime() : 0);
+	function withLiveUpsPoint(points: SeriesPoints | undefined, value: number | null | undefined): SeriesPoints {
+		const base = points ?? [];
+		if (value == null || !upsReading || now - upsTime > 60_000) return base;
+		const last = base.at(-1);
+		return last && last[0] >= upsTime ? base : [...base, [upsTime, value]];
+	}
+	const upsPercentSeries = $derived<ChartSeries[]>([
+		{ id: 'charge', label: 'Battery charge', color: 'var(--series-3)', points: withLiveUpsPoint(history?.ups.charge, upsReading?.batteryCharge) },
+		{ id: 'load', label: 'Load', color: 'var(--series-2)', points: withLiveUpsPoint(history?.ups.load, upsReading?.load) }
+	]);
+	const mainsSeries = $derived<ChartSeries[]>([
+		{ id: 'inputVoltage', label: 'Mains in', color: 'var(--series-1)', points: withLiveUpsPoint(history?.ups.inputVoltage, upsReading?.inputVoltage) }
+	]);
+	const upsSummary = $derived(summarizeUps(ups));
+
 	const tilePoints = (id: string) => temperatureSeries.find((s) => s.id === id)?.points ?? [];
 
 	const status = $derived.by((): { level: 'good' | 'warning' | 'critical'; label: string; detail: string } => {
@@ -189,6 +213,9 @@
 	{#if status.detail}
 		<p class="banner {status.level}" role="status">{status.detail}</p>
 	{/if}
+	{#if ups.enabled && upsSummary.banner}
+		<p class="banner {upsSummary.level}" role="alert">{upsSummary.banner}</p>
+	{/if}
 
 	<!-- One filter row, above everything it scopes: the tile trends and both charts all follow this range. -->
 	<div class="filters">
@@ -224,6 +251,14 @@
 	</div>
 	{#if fanIds.length > MAX_SERIES}
 		<p class="muted note">{fanIds.length - MAX_SERIES} more fan(s) are not charted: six is as many lines as colour can keep apart. All of them are listed below.</p>
+	{/if}
+
+	{#if ups.enabled}
+		<section class="power" aria-label="Power">
+			<UpsPanel {ups} inputVoltage={history?.ups.inputVoltage ?? []} {now} />
+			<LineChart title="UPS battery and load" series={upsPercentSeries} from={chartFrom} to={chartTo} unit="%" yDomain={[0, 100]} {loading} />
+			<LineChart title="Mains voltage" series={mainsSeries} from={chartFrom} to={chartTo} unit=" V" {loading} />
+		</section>
 	{/if}
 
 	<div class="lower">
@@ -330,6 +365,13 @@
 		display: grid;
 		grid-template-columns: repeat(auto-fit, minmax(min(100%, 440px), 1fr));
 		gap: 12px;
+	}
+
+	.power {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+		gap: 12px;
+		align-items: start;
 	}
 
 	.note {

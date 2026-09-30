@@ -19,7 +19,7 @@
 				<time class="muted numeric" datetime={event.ts} title={new Date(event.ts).toLocaleString()}>{relativeTime(event.ts, now)}</time>
 			</li>
 		{:else}
-			<li class="muted">Nothing has happened yet. Stalled fans, unreadable sensors, SMART changes and daemon outages show up here.</li>
+			<li class="muted">Nothing has happened yet. Stalled fans, unreadable sensors, SMART changes, power events and daemon outages show up here.</li>
 		{/each}
 	</ul>
 </section>

@@ -1,7 +1,7 @@
 // Chart history queries. Every range is bucketed in SQL down to a few hundred points per
 // series, so a 30-day chart costs the browser no more than a 1-hour one.
 
-import type { HistoryResponse, RangeKey, SeriesPoints } from '$lib/types';
+import type { HistoryResponse, RangeKey, SeriesPoints, UpsMetric } from '$lib/types';
 import type { Sql } from './db';
 
 export interface RangeSpec {
@@ -39,7 +39,8 @@ export function hottestOf(series: SeriesPoints[]): SeriesPoints {
 	return [...hottest.entries()].sort((a, b) => a[0] - b[0]);
 }
 
-export async function queryHistory(sql: Sql, range: RangeKey, now = new Date()): Promise<HistoryResponse> {
+/** `upsName`: the UPS whose history to include, or undefined without NUT. */
+export async function queryHistory(sql: Sql, range: RangeKey, upsName: string | undefined, now = new Date()): Promise<HistoryResponse> {
 	const spec = rangeSpec(range);
 	const from = new Date(now.getTime() - spec.seconds * 1000);
 	const bucket = `${spec.bucketSeconds} seconds`;
@@ -78,11 +79,39 @@ export async function queryHistory(sql: Sql, range: RangeKey, now = new Date()):
 		if (row.rpm !== null) (rpms[row.id] ??= []).push([time, Math.round(row.rpm)]);
 	}
 
+	const ups: Partial<Record<UpsMetric, SeriesPoints>> = {};
+	if (upsName) {
+		const upsRows =
+			spec.source === 'raw'
+				? await sql`
+						select date_bin(${bucket}::interval, ts, 'epoch'::timestamptz) as bucket,
+							avg(charge)::float8 as charge, avg(load)::float8 as load,
+							avg(runtime_seconds)::float8 as runtime, avg(input_voltage)::float8 as input_voltage
+						from ups_samples where ups = ${upsName} and ts >= ${from} group by 1 order by 1`
+				: await sql`
+						select date_bin(${bucket}::interval, bucket, 'epoch'::timestamptz) as bucket,
+							(sum(avg_charge * samples) / sum(samples))::float8 as charge, (sum(avg_load * samples) / sum(samples))::float8 as load,
+							(sum(avg_runtime_seconds * samples) / sum(samples))::float8 as runtime,
+							(sum(avg_input_voltage * samples) / sum(samples))::float8 as input_voltage
+						from ups_minutes where ups = ${upsName} and bucket >= ${from} group by 1 order by 1`;
+
+		const add = (metric: UpsMetric, time: number, value: number | null, digits: number) => {
+			if (value !== null) (ups[metric] ??= []).push([time, round(value, digits)]);
+		};
+		for (const row of upsRows) {
+			const time = (row.bucket as Date).getTime();
+			add('charge', time, row.charge, 1);
+			add('load', time, row.load, 1);
+			add('runtime', time, row.runtime === null ? null : row.runtime / 60, 1);
+			add('inputVoltage', time, row.input_voltage, 1);
+		}
+	}
+
 	const group = (prefix: string) => Object.entries(temperatures).filter(([id]) => id.startsWith(prefix)).map(([, points]) => points);
 	temperatures['drives:max'] = hottestOf(group('drive:'));
 	temperatures['memory:max'] = hottestOf(group('dimm:'));
 
-	return { range, from: from.getTime(), to: now.getTime(), bucketSeconds: spec.bucketSeconds, temperatures, duties, rpms };
+	return { range, from: from.getTime(), to: now.getTime(), bucketSeconds: spec.bucketSeconds, temperatures, duties, rpms, ups };
 }
 
 function round(value: number, digits: number): number {

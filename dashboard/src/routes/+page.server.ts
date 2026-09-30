@@ -8,6 +8,7 @@ export const load: PageServerLoad = async () => {
 		snapshot: runtime.latest,
 		daemonConnected: runtime.daemonConnected,
 		drives: runtime.driveList,
+		ups: runtime.ups,
 		events: await runtime.recentEvents(50).catch(() => [])
 	};
 };

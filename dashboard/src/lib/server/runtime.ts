@@ -1,12 +1,13 @@
-// The long-lived heart of the server: one daemon connection in, Postgres and any number of
-// browsers out. Started once from hooks.server.ts and kept on globalThis so a dev-server
+// The long-lived heart of the server: one daemon connection and one NUT connection in,
+// Postgres and any number of browsers out. Started once from hooks.server.ts and kept on globalThis so a dev-server
 // module reload doesn't leave a second copy running.
 
 import { env } from '$env/dynamic/private';
-import type { DriveState, EventRecord, LiveMessage, Snapshot } from '$lib/types';
-import { ConditionTracker, conditionsIn, diffDriveHealth, type NewEvent } from './alerts';
+import type { DriveState, EventRecord, LiveMessage, Snapshot, UpsReading, UpsState } from '$lib/types';
+import { ConditionTracker, conditionsIn, diffDriveHealth, upsConditions, type NewEvent } from './alerts';
 import { DaemonClient } from './daemon';
 import * as db from './db';
+import { NutClient } from './nut';
 
 const config = {
 	socketPath: env.FANCONTROL_SOCKET || undefined,
@@ -16,6 +17,11 @@ const config = {
 	persistIntervalMs: Number(env.PERSIST_INTERVAL_SECONDS || 10) * 1000,
 	rawRetentionDays: Number(env.RAW_RETENTION_DAYS || 7),
 	ntfyUrl: env.NTFY_URL || undefined,
+	// NUT's upsd. Unset NUT_HOST and the UPS is left out entirely.
+	nutHost: env.NUT_HOST || undefined,
+	nutPort: Number(env.NUT_PORT || 3493),
+	nutUps: env.NUT_UPS || 'apc',
+	nutPollIntervalMs: Number(env.NUT_POLL_SECONDS || 5) * 1000,
 	// How long the daemon has to be unreachable before that counts as an incident.
 	daemonLostAfterMs: 20_000
 };
@@ -28,11 +34,18 @@ class Runtime {
 	latest: Snapshot | null = null;
 	daemonConnected = false;
 	drives = new Map<string, DriveState>();
+	ups: UpsState = { enabled: Boolean(config.nutHost), reading: null, error: null };
+	readonly upsName = config.nutUps;
 
 	private readonly subscribers = new Set<Subscriber>();
 	private readonly tracker = new ConditionTracker();
 	private readonly knownSensorIds = new Set<string>();
 	private readonly client: DaemonClient;
+	private readonly nut: NutClient | null = null;
+	// The UPS reports its own state, so one poll is enough: an OB flag is a real power event, not a flaky read.
+	private readonly upsTracker = new ConditionTracker(1);
+	private upsUnreadableSince = Date.now();
+	private lastUpsPersistedAt = 0;
 
 	private databaseReady = false;
 	private lastPersistedAt = 0;
@@ -50,11 +63,25 @@ class Runtime {
 				onConnectionChange: (connected, reason) => this.handleConnectionChange(connected, reason)
 			}
 		);
+
+		if (config.nutHost) {
+			this.nut = new NutClient(
+				{ host: config.nutHost, port: config.nutPort, ups: config.nutUps, pollIntervalMs: config.nutPollIntervalMs },
+				{
+					onReading: (reading) => void this.handleUpsReading(reading),
+					onError: (error) => void this.handleUpsError(error)
+				}
+			);
+		}
 	}
 
 	async start(): Promise<void> {
 		console.log(`[fancontrol] daemon: ${config.socketPath ?? config.daemonUrl ?? 'http://127.0.0.1:5178'}`);
 		this.client.start();
+		if (this.nut) {
+			console.log(`[fancontrol] ups: ${config.nutUps}@${config.nutHost}:${config.nutPort}`);
+			this.nut.start();
+		}
 
 		await this.prepareDatabase();
 		setInterval(() => void this.maintain(), 60_000).unref();
@@ -139,6 +166,39 @@ class Runtime {
 		} catch (error) {
 			this.reportDatabaseError('writing history', error);
 		}
+	}
+
+	private async handleUpsReading(reading: UpsReading): Promise<void> {
+		const recovered = this.ups.reading === null;
+		this.ups = { enabled: true, reading, error: null };
+		this.upsUnreadableSince = 0;
+		this.broadcast({ type: 'ups', ups: this.ups });
+		if (recovered) console.log(`[fancontrol] reading the UPS: ${reading.status.join(' ')}`);
+
+		await this.evaluateUps();
+
+		if (!this.databaseReady) return;
+		const now = Date.now();
+		if (now - this.lastUpsPersistedAt < config.persistIntervalMs) return;
+		this.lastUpsPersistedAt = now;
+		try {
+			await db.insertUpsSample(this.sql, reading);
+		} catch (error) {
+			this.reportDatabaseError('writing UPS history', error);
+		}
+	}
+
+	private async handleUpsError(error: string): Promise<void> {
+		if (this.ups.error !== error) console.log(`[fancontrol] cannot read the UPS: ${error}`);
+		if (this.ups.reading !== null || this.upsUnreadableSince === 0) this.upsUnreadableSince = Date.now();
+		this.ups = { enabled: true, reading: null, error };
+		this.broadcast({ type: 'ups', ups: this.ups });
+		await this.evaluateUps();
+	}
+
+	private async evaluateUps(): Promise<void> {
+		const unreadableFor = this.ups.reading ? 0 : Date.now() - this.upsUnreadableSince;
+		for (const event of this.upsTracker.update(upsConditions(this.ups, unreadableFor))) await this.raise(event);
 	}
 
 	private handleConnectionChange(connected: boolean, reason?: string): void {

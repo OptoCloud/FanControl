@@ -310,14 +310,25 @@ The dashboard (`dashboard/`) is a SvelteKit app run under Node in an
 unprivileged LXC. It keeps the one connection to the daemon's socket, writes
 history to Postgres (10s samples for 7 days, 1-minute rollups forever), fans
 live data out to browsers over SSE, and owns alerting (stalled fans, unreadable
-or vanished sensors, SMART changes, daemon outages; optional ntfy push). A
-drive's temperature is stored twice: as `drive:<wwn>`, the disk's own trend
+or vanished sensors, SMART changes, power events, daemon outages; optional ntfy
+push).
+
+It also polls the UPS from NUT's `upsd` over TCP (`NUT_HOST`, `NUT_PORT`,
+`NUT_UPS`; every 5s, like `upsmon`). Reads on upsd are anonymous, so it needs no
+NUT account. Charge, load, runtime and voltages go into the same history, and on
+battery, low battery, forced shutdown, replace battery and overload become
+events. It only watches: `upsmon` on the host still owns the shutdown. Leave
+`NUT_HOST` unset to hide the UPS.
+
+A drive's temperature is stored twice: as `drive:<wwn>`, the disk's own trend
 wherever it's plugged in, and as `port:<by-path>`, the bay's trend whichever
 disk is in it. `bay_occupants` records which disk sat in which bay and when,
 and the drive table switches between the two views. See
 `dashboard/deploy/` for the unit and env template, `dashboard/deploy/package.sh`
-to build the deployable tarball, and `dashboard/scripts/mock-daemon.mjs` plus
-`dashboard/docker-compose.dev.yml` for developing without the hardware.
+to build the deployable tarball. To develop without the hardware,
+`dashboard/scripts/mock-daemon.mjs` and `dashboard/scripts/mock-nut.mjs` stand
+in for the daemon and upsd, and `dashboard/docker-compose.dev.yml` runs
+Postgres.
 
 ## License
 
