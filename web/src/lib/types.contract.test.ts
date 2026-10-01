@@ -1,6 +1,8 @@
-// The other half of the wire contract. protocol/contract.json is generated from the Rust types
-// by `cargo test -p vigil-protocol`; this checks web/src/lib/types.ts against it in BOTH
-// directions, so neither side can drift silently. See docs/STYLE.md §1.3.
+// The browser's half of the wire contract. Two programs define the JSON this page reads, and each
+// writes its half to a contract file from its own tests: vigild (Rust) writes daemon/contract.json
+// with the snapshot types, vigil-core (C#) writes core/contract.json with the live stream's. This
+// checks web/src/lib/types.ts against both in BOTH directions, so no side can drift silently.
+// See docs/STYLE.md §1.3.
 //
 // How it works: one hand-written key list per wire type, checked twice over.
 //   - `satisfies Record<keyof T, 1>` makes the COMPILER reject a list that misses a field of
@@ -9,9 +11,8 @@
 // A field added in Rust fails the runtime check; a field added only in TypeScript fails the
 // compile-time check. Either way the commit cannot land half-done.
 
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import contract from '../../../protocol/contract.json';
-import * as limits from './limits';
 import type {
 	DriveHealth,
 	DriveState,
@@ -26,6 +27,25 @@ import type {
 	UpsReading,
 	UpsState
 } from './types';
+
+/** The sections a contract file may have. Each program writes only the ones it owns. */
+interface ContractHalf {
+	$comment: string;
+	enums?: Record<string, string[]>;
+	types?: Record<string, object>;
+	liveMessages?: Record<string, object>;
+}
+
+/** Read at test time rather than imported, so the page's own build never depends on these files. */
+const half = (path: string) => JSON.parse(readFileSync(new URL(path, import.meta.url), 'utf8')) as ContractHalf;
+const daemon = half('../../../daemon/contract.json');
+const core = half('../../../core/contract.json');
+
+const contract = {
+	enums: { ...daemon.enums, ...core.enums },
+	types: { ...daemon.types, ...core.types },
+	liveMessages: core.liveMessages ?? {}
+};
 
 const keysOf = (shape: Record<string, 1>) => Object.keys(shape).sort();
 const fieldsOf = (sample: object) => Object.keys(sample).sort();
@@ -107,14 +127,19 @@ const LIVE_MESSAGE_KEYS = {
 	event: { type: 1, event: 1 },
 	drives: { type: 1, drives: 1 },
 	ups: { type: 1, ups: 1 }
-} satisfies Record<Exclude<LiveMessage['type'], 'core'>, Record<string, 1>>;
-
-/** vigil-web's own addition: whether it can reach vigil-core. Not part of vigil-core's stream. */
-const WEB_ONLY_LIVE_MESSAGES = ['core'] as const satisfies readonly LiveMessage['type'][];
+} satisfies Record<LiveMessage['type'], Record<string, 1>>;
 
 describe('the generated wire contract', () => {
-	it('is the file the Rust tests generate', () => {
-		expect(contract.$comment).toContain('cargo test -p vigil-protocol');
+	it('is the pair of files the two programs generate', () => {
+		// Each says how it is regenerated; an empty comment means a hand-written file.
+		expect(daemon.$comment).not.toBe('');
+		expect(core.$comment).not.toBe('');
+	});
+
+	it('defines no type twice', () => {
+		const both = (a: object | undefined, b: object | undefined) => Object.keys(a ?? {}).filter((key) => Object.keys(b ?? {}).includes(key));
+		expect(both(daemon.types, core.types)).toEqual([]);
+		expect(both(daemon.enums, core.enums)).toEqual([]);
 	});
 
 	it('covers every type this file claims to mirror', () => {
@@ -124,14 +149,14 @@ describe('the generated wire contract', () => {
 });
 
 describe.each(Object.entries(TYPE_KEYS))('%s', (name, shape) => {
-	it('has exactly the fields the Rust type serializes', () => {
+	it('has exactly the fields its owner serializes', () => {
 		const sample = contract.types[name as keyof typeof contract.types];
 		expect(fieldsOf(sample)).toEqual(keysOf(shape));
 	});
 });
 
 describe.each(Object.entries(ENUM_MEMBERS))('%s', (name, members) => {
-	it('has exactly the variants the Rust enum serializes', () => {
+	it('has exactly the variants its owner serializes', () => {
 		const variants = contract.enums[name as keyof typeof contract.enums];
 		expect([...variants].sort()).toEqual(keysOf(members));
 	});
@@ -146,29 +171,5 @@ describe('LiveMessage', () => {
 		const sample = contract.liveMessages[tag as keyof typeof contract.liveMessages];
 		expect(fieldsOf(sample)).toEqual(keysOf(shape));
 		expect((sample as { type: string }).type).toBe(tag);
-	});
-
-	it("keeps vigil-web-only variants out of vigil-core's contract", () => {
-		for (const tag of WEB_ONLY_LIVE_MESSAGES) {
-			expect(Object.keys(contract.liveMessages)).not.toContain(tag);
-		}
-	});
-});
-
-// protocol/src/limits.rs is the single declaration; $lib/limits.ts is its TypeScript mirror.
-// If one side changes, this fails rather than letting the two drift apart silently.
-describe('the shared limits', () => {
-	it.each([
-		['streamKeepaliveSeconds', limits.STREAM_KEEPALIVE_MS / 1000],
-		['streamSilenceTimeoutSeconds', limits.STREAM_SILENCE_TIMEOUT_MS / 1000],
-		['coreDefaultPort', limits.CORE_DEFAULT_PORT],
-		['databaseUrlDefault', limits.DATABASE_URL_DEFAULT],
-		['databaseStatementTimeoutMillis', limits.DATABASE_STATEMENT_TIMEOUT_MS]
-	])('%s matches protocol/src/limits.rs', (key, mirrored) => {
-		expect(contract.limits[key as keyof typeof contract.limits]).toBe(mirrored);
-	});
-
-	it('gives a reader more than two keepalives of slack', () => {
-		expect(limits.STREAM_SILENCE_TIMEOUT_MS).toBeGreaterThan(limits.STREAM_KEEPALIVE_MS * 2);
 	});
 });

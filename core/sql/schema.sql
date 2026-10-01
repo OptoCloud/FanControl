@@ -1,7 +1,7 @@
 -- vigil's base tables. vigil-core owns this schema and applies it on every start; every
 -- statement is `if not exists` so that is idempotent. TimescaleDB turns the three *_samples
 -- tables into hypertables and builds the rollups over them afterwards: see sql/aggregates/
--- and core/src/timescale.rs.
+-- and core/Vigil.Core/Data/SchemaSetup.cs.
 --
 -- Raw samples are narrow (one row per sensor per sample) so a sensor appearing or vanishing
 -- needs no schema change.

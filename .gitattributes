@@ -7,5 +7,8 @@
 deploy/** text eol=lf
 scripts/** text eol=lf
 daemon/scripts/** text eol=lf
-core/deploy/** text eol=lf
-web/deploy/** text eol=lf
+# C# is LF everywhere because .editorconfig says so and `dotnet format --verify-no-changes`
+# enforces it: with core.autocrlf on Windows, every file checked out CRLF failed the check.
+core/** text eol=lf
+# Web sources are LF for the same reason: prettier --check enforces it.
+web/** text eol=lf

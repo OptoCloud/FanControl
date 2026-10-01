@@ -1,26 +1,27 @@
 # vigil
 
-Looks after the hardware of a Linux (Proxmox) NAS host. Three parts, one job
+Looks after the hardware of a Linux (Proxmox) NAS host. Two programs, one job
 each:
 
-- **`vigild`** (`daemon/`), the hardware daemon. It reads every temperature
-  on the host and each drive's SMART health, and drives the fans, because BIOS
-  Smart Fan curves have no idea what an LSI HBA, a drive array, or a GPU are
-  actually doing. It runs as root on the host and is the only part that
-  changes anything.
-- **`vigil-core`** (`core/`), the orchestrator. It reads `vigild` and the
-  UPS, records history in Postgres, raises alerts, and streams the live state.
-- **`vigil-web`** (`web/`), the dashboard. It shows `vigil-core`'s live
-  stream and the history. It only reads.
+- **`vigild`** (`daemon/`, Rust), the hardware daemon. It reads every
+  temperature on the host and each drive's SMART health, and drives the fans,
+  because BIOS Smart Fan curves have no idea what an LSI HBA, a drive array,
+  or a GPU are actually doing. It runs as root on the host and is the only
+  part that changes anything.
+- **`vigil-core`** (`core/`, C# on .NET 10), everything else. It reads
+  `vigild` and the UPS, records history in Postgres, raises alerts, and serves
+  the dashboard (`web/`, a static SvelteKit build) with its live stream and
+  history to the LAN.
 
 ```
-vigild (host, root) ──socket──┐
-                              ├──> vigil-core ──> Postgres ──> vigil-web ──> browser
-upsd (NUT, host) ─────TCP─────┘         └── live stream (loopback) ──┘
+vigild (host, root) ──unix socket──┐
+                                   ├──> vigil-core ──> Postgres + TimescaleDB
+upsd (NUT, host) ──────TCP─────────┘        │
+                                            └── LAN: dashboard + GET /api/* ──> browser
 ```
 
 Most of this README is `vigild`; [vigil-core](#vigil-core) and
-[vigil-web](#vigil-web) have their own sections.
+[the dashboard](#the-dashboard) have their own sections.
 
 ## Why
 
@@ -134,8 +135,8 @@ curl -N --unix-socket /run/vigil/vigild.sock http://localhost/events
   `: keepalive` comment is sent when nothing was published for 15 seconds.
 
 SSE rather than WebSocket because data only flows one way: it is plain HTTP
-and clients reconnect on their own. From Node:
-`http.request({ socketPath, path: '/events' })`. Simultaneous connections are
+and clients reconnect on their own. vigil-core reads it with .NET's
+`HttpClient` over the socket. Simultaneous connections are
 capped by `api.max_clients`; past that, new ones get `503`.
 
 ```jsonc
@@ -166,20 +167,21 @@ capped by `api.max_clients`; past that, new ones get `503`.
 
 ## Project layout
 
-A Cargo workspace (`daemon/`, `core/`, `protocol/`) plus the SvelteKit app.
-
-- `protocol/`: `vigil-protocol`, the types that cross a process boundary,
-  defined once: `vigild`'s snapshot and `vigil-core`'s live stream.
-  `web/src/lib/types.ts` mirrors them for the browser.
-- `daemon/`: `vigild`. Hardware-independent logic (curves, config
-  validation, the HBA wire format, SMART parsing, the safety guard, the
-  control loop itself) is separated from the thin platform plumbing around it
-  and unit-tested against an in-memory sysfs.
+- `daemon/`: `vigild`, a single Rust crate. Hardware-independent logic
+  (curves, config validation, the HBA wire format, SMART parsing, the safety
+  guard, the control loop itself) is separated from the thin platform
+  plumbing around it and unit-tested against an in-memory sysfs. Its wire
+  types are in `daemon/src/protocol/`, and its tests write them out as
+  `daemon/contract.json`.
 - `deploy/`: `vigild`'s systemd unit, config, `tmpfiles.d` and
   `modules-load.d` entries, `release-fans.sh`, and the header-mapping helper
   scripts.
-- `core/`: `vigil-core`, see [below](#vigil-core).
-- `web/`: `vigil-web`, see [below](#vigil-web).
+- `core/`: `vigil-core` (`Vigil.Core`, `Vigil.Core.Tests`), every SQL
+  statement it runs in `core/sql/`, its deployment in `core/deploy/`, and
+  `core/contract.json`, the wire types it sends the browser, written by its
+  tests. See [below](#vigil-core).
+- `web/`: the dashboard, see [below](#the-dashboard). `web/src/lib/types.ts`
+  mirrors both contract files, and a test checks it against them.
 - `dev/`: stand-ins for `vigild` and upsd, and a Postgres, for developing
   without the hardware.
 
@@ -203,32 +205,43 @@ the short version of all of it.
 ## Build and test
 
 `scripts/check.sh` runs every check there is: formatting, clippy, the Rust
-tests, the wire contract, `cargo-deny`, the web lint, type-check and tests,
-`npm audit`, and the project rules a grep can enforce. CI runs that same
-script and nothing else.
+tests, `cargo-deny`, the .NET format, build and tests, both wire contracts,
+the web lint, type-check and tests, `npm audit`, and the project rules a grep
+can enforce. CI runs that same script and nothing else.
 
 ```bash
-./scripts/check.sh          # everything, before every commit
-./scripts/check.sh --rust   # or --web, or --rules
+./scripts/check.sh            # everything, before every commit
+./scripts/check.sh --rust     # or --dotnet, --web, --rules
 ```
 
 Developed and unit-tested on Windows, runs only on Linux. No cross toolchain
-is needed: the musl target ships its own C runtime and links with Rust's
-bundled LLD.
+is needed for either program: the musl target ships its own C runtime and
+links with Rust's bundled LLD, and .NET publishes for Linux from anywhere.
 
 ```bash
-cargo test --workspace                                       # unit tests, any OS
-rustup target add x86_64-unknown-linux-musl                  # once
-cargo build --release --target x86_64-unknown-linux-musl     # static vigild and vigil-core
+cargo test --workspace                                         # vigild's tests, any OS
+dotnet run --project core/Vigil.Core.Tests                     # vigil-core's tests
+rustup target add x86_64-unknown-linux-musl                    # once
+cargo build --release --target x86_64-unknown-linux-musl       # static vigild
+core/deploy/package.sh                                         # vigil-core.tar.gz, see below
 ```
 
-Both binaries land in `target/x86_64-unknown-linux-musl/release/`.
+`global.json` at the repo root pins the .NET 10 SDK; every command runs from
+the root, which is where `dotnet` looks for it. vigil-core's tests run with
+`dotnet run`, not `dotnet test`: on this SDK
+`dotnet test`'s bridge to xunit.v3 discovers no tests at all. Its database
+tests skip unless `VIGIL_TEST_DATABASE_URL` points at a TimescaleDB, such as
+the one in `dev/docker-compose.yml`:
 
-`daemon/scripts/integration-test.sh <binary>` runs that real Linux binary end
-to end against a fake sysfs tree with stand-in `nvidia-smi`/`smartctl`: the
-socket API, several simultaneous event consumers, real fan writes, fail-safe
-on a vanished sensor, and the fans being handed back on SIGTERM. It needs no
-hardware and no root, so it runs under WSL or in CI:
+```bash
+VIGIL_TEST_DATABASE_URL=postgres://vigil:vigil@127.0.0.1:5433/vigil dotnet run --project core/Vigil.Core.Tests
+```
+
+`daemon/scripts/integration-test.sh <binary>` runs the real Linux `vigild`
+end to end against a fake sysfs tree with stand-in `nvidia-smi`/`smartctl`:
+the socket API, several simultaneous event consumers, real fan writes,
+fail-safe on a vanished sensor, and the fans being handed back on SIGTERM.
+It needs no hardware and no root, so it runs under WSL or in CI:
 
 ```powershell
 wsl -e bash /mnt/e/path/to/daemon/scripts/integration-test.sh /mnt/e/path/to/target/x86_64-unknown-linux-musl/release/vigild
@@ -239,6 +252,8 @@ or the systemd integration. Those were verified on the target host (see
 Status) and need re-verifying there after changes to them.
 
 ## Deployment
+
+### vigild
 
 **Host prerequisite:** drive SMART health shells out to `smartctl` (package
 `smartmontools`), not installed by default on a minimal Proxmox/Debian host:
@@ -271,35 +286,6 @@ systemctl daemon-reload
 systemctl enable --now vigild.service
 journalctl -u vigild -f
 ```
-
-### Secrets and database roles
-
-`vigil-core` and `vigil-web` each read a `DATABASE_URL` containing a password, so both
-environment files are secrets. They live outside the repo and are owned by root:
-
-```bash
-install -o root -g vigil -m 0640 core/deploy/vigil-core.env /etc/vigil-core.env
-install -o root -g vigil -m 0640 web/deploy/vigil-web.env   /etc/vigil-web.env
-```
-
-The two use **different roles**. `vigil-core` owns the schema and writes every row;
-`vigil-web` reads and must never be able to write, which is the role's job to enforce and not
-a comment's. Once, as a superuser on the Postgres host:
-
-```sql
-create role vigil_web login password 'choose-one';
-grant connect on database vigil to vigil_web;
-grant usage on schema public to vigil_web;
-grant select on all tables in schema public to vigil_web;
--- vigil-core creates tables and continuous aggregates as it starts, so new ones have to
--- inherit the grant; without this line a new rollup is invisible to the dashboard.
-alter default privileges in schema public grant select on tables to vigil_web;
-```
-
-`vigil-core` also refuses to start if `CORE_HOST` is anything but loopback, unless
-`CORE_ALLOW_NON_LOOPBACK=1` is set alongside it. That is deliberate: actions are meant to
-arrive on its API, so only `vigil-web` beside it may reach it. See
-[`docs/SECURITY.md`](docs/SECURITY.md).
 
 `channels` and `curves` in `vigild.toml` are specific to one board and its
 wiring. Leave both empty to run monitor-only, which never writes to any `pwmN`
@@ -374,6 +360,68 @@ The directory comes from `tmpfiles.d` rather than the unit's
 service restart, which gives it a new inode and silently breaks the
 container's bind mount.
 
+### vigil-core and the dashboard
+
+`vigil-core` runs in an unprivileged LXC, with `vigild`'s socket directory
+bind-mounted in as described above. `core/deploy/package.sh` builds
+`vigil-core.tar.gz`: a self-contained, single-file Linux build of about
+100 MB (the host needs no .NET runtime; [ADR-016](docs/DECISIONS.md) has why
+not NativeAOT), the
+dashboard's static build beside it as `web/`, and the unit and env template.
+
+| File | Goes to |
+|---|---|
+| `vigil-core` | `/opt/vigil-core/vigil-core` (`chmod +x`) |
+| `web/` | `/opt/vigil-core/web/` |
+| `vigil-core.service` | `/etc/systemd/system/vigil-core.service` |
+| `vigil-core.env` | `/etc/vigil-core.env`, filled in (below) |
+
+```bash
+systemctl stop vigil-core.service     # same reason as vigild: never overwrite a running binary
+tar -xzf vigil-core.tar.gz -C /opt
+install -o root -g vigil -m 0640 /opt/vigil-core/vigil-core.env /etc/vigil-core.env   # first time only
+cp /opt/vigil-core/vigil-core.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now vigil-core.service
+journalctl -u vigil-core -f
+```
+
+The unit is `Type=notify`, so `systemctl start` returns once vigil-core is
+listening. It takes the systemd hardening baseline except
+`MemoryDenyWriteExecute`, which .NET's JIT cannot run under; the unit says so.
+
+The dashboard answers on `CORE_PORT` (3000 in the template, where it has
+always been) on every interface. **It has no authentication, deliberately:
+the LAN is treated as trusted, and every route is a GET that changes
+nothing** ([ADR-008](docs/DECISIONS.md)). Anything on the network can read
+the host's state and the event log. A test fails the build if a route with
+any other method is ever added; adding one means authentication comes first.
+
+#### Secrets and database roles
+
+`/etc/vigil-core.env` holds `DATABASE_URL`, which contains a password, so it
+is a secret: outside the repo, `0640 root:vigil`.
+
+vigil-core uses **two roles**. `DATABASE_URL` owns the schema and writes
+every row. `DATABASE_URL_READONLY` is what the history and event-log queries
+run as, and it can only read, which is the role's job to enforce and not a
+comment's: a bug in a query path cannot write. Once, as a superuser on the
+Postgres host:
+
+```sql
+create role vigil_web login password 'choose-one';
+grant connect on database vigil to vigil_web;
+grant usage on schema public to vigil_web;
+grant select on all tables in schema public to vigil_web;
+-- vigil-core creates tables and continuous aggregates as it starts, so new ones have to
+-- inherit the grant; without this line a new rollup is invisible to the dashboard.
+alter default privileges in schema public grant select on tables to vigil_web;
+```
+
+The role keeps the name it had when the dashboard was a separate process, so
+an existing grant still works. Left unset, the read path shares the owner's
+role and vigil-core says so at startup. See [`docs/SECURITY.md`](docs/SECURITY.md).
+
 ## Status
 
 Live and running in production on the target host. Verified there: every
@@ -393,67 +441,107 @@ Known accepted quirks:
   possible, but several (especially `lsi-cooling` and `drive-cage`) are still
   based on limited data. Revisit once real-load history exists.
 
+`vigil-core` was rewritten in C# and merged with the dashboard's server on
+2026-10-01, replacing a Rust `vigil-core` and a Node `vigil-web`. It has been
+run end to end against the stand-ins in `dev/`, and its writes and history
+queries against TimescaleDB 2.30.2. Its port of the schema setup has not yet
+run against a real TimescaleDB, and it has not yet been deployed to the host.
+
 ## vigil-core
 
-`vigil-core` (`core/`) is a static Rust binary run in an unprivileged LXC,
-beside `vigil-web`. One thread owns all state, as in `vigild`; the live stream
-is served by axum on its own small tokio runtime.
+`vigil-core` (`core/`) is an ASP.NET Core application. One loop owns all
+state, as in `vigild`: the pollers and the live stream's subscribers only
+send it messages, so there are no locks and events are handled in the order
+they happened.
 
-- It keeps the one connection to `vigild`'s socket (the socket's directory is
-  bind-mounted in) and one to NUT's `upsd` over TCP, polling `LIST VAR` every
-  5s like `upsmon`. Reads on upsd are anonymous, so it needs no NUT account.
-  It only watches: `upsmon` on the host still owns the shutdown.
+- It keeps the one connection to `vigild`'s socket and one to NUT's `upsd`
+  over TCP, polling `LIST VAR` every 5s like `upsmon`. Reads on upsd are
+  anonymous, so it needs no NUT account. It only watches: `upsmon` on the
+  host still owns the shutdown.
 - It writes history to Postgres with the TimescaleDB extension, and owns the
-  schema. It only inserts raw samples (every 10s); TimescaleDB's own jobs do
-  the rest: continuous aggregates roll them up per minute (`*_1m`) and per
-  hour (`*_1h`), raw chunks are compressed after 7 days and dropped after 30,
+  schema: tables, hypertables, continuous aggregates and policies are applied
+  idempotently each time it connects ([ADR-007](docs/DECISIONS.md)). It only
+  inserts raw samples (every 10s); TimescaleDB's own jobs do the rest:
+  continuous aggregates roll them up per minute (`*_1m`) and per hour
+  (`*_1h`), raw chunks are compressed after 7 days and dropped after 30,
   minute rollups after a year, and hourly ones are kept forever. The
   extension has to be created in the database by a superuser first;
-  `vigil-core` checks for it and retries until it is there. A drive's temperature is stored twice: as
-  `drive:<wwn>`, the disk's own trend wherever it's plugged in, and as
-  `port:<by-path>`, the bay's trend whichever disk is in it. `bay_occupants`
-  records which disk sat in which bay and when.
-- It owns alerting: stalled fans, unreadable or vanished sensors, SMART
-  changes, `vigild` outages, and the UPS on battery, low, in forced shutdown,
-  needing a battery, overloaded or not protecting. Events go to Postgres and,
-  optionally, ntfy (sent with `curl`, so no TLS stack is linked in).
-- It streams the live state on `GET /live` (Server-Sent Events: the current
-  state on connect, then every change), on loopback only.
+  vigil-core checks for it and retries until it is there. The first fill of
+  the rollups over existing history can take minutes, once per database.
+  A drive's temperature is stored twice: as `drive:<wwn>`, the disk's own
+  trend wherever it's plugged in, and as `port:<by-path>`, the bay's trend
+  whichever disk is in it. `bay_occupants` records which disk sat in which
+  bay and when.
+- It owns alerting: stalled fans, fans not under `vigild`'s control,
+  unreadable or vanished sensors, SMART changes, `vigild` outages, and the UPS
+  on battery, low, in forced shutdown, needing a battery, overloaded or not
+  protecting. A condition must hold for three polls before it is raised and
+  be gone for three before it clears; UPS power events count on the first.
+  Events go to Postgres and, optionally, ntfy over HTTPS.
+- Without a database the live view still works, and it retries the database
+  every 15 seconds.
 
-It is configured from the environment: `VIGILD_SOCKET`, `DATABASE_URL`,
-`NUT_HOST`/`NUT_PORT`/`NUT_UPS`, `NTFY_URL`, `RAW_RETENTION_DAYS`, `CORE_PORT`; see
-`core/deploy/vigil-core.env`. Without `NUT_HOST` the UPS is left out. Without
-a database the live stream still works, and it keeps retrying.
+Its HTTP API, all `GET`:
 
-## vigil-web
+| Route | What it serves |
+|---|---|
+| `/` and its assets | the dashboard, from `WEB_ROOT` |
+| `/api/live` | Server-Sent Events: the current state on connect, then every change (snapshots, `vigild` reachability, drives, the UPS, new events). A named `keepalive` event after 20s of quiet. At most 64 at once; `503` past that |
+| `/api/history?range=` | chart history for `1h`, `6h`, `24h`, `7d`, `30d` or `1y`, bucketed in SQL. Each range reads the coarsest level that still has its resolution: raw samples up to 6 hours, minute rollups up to 7 days, hourly ones beyond. `503` without a database |
+| `/api/events` | the newest 50 events, `[]` without a database |
+| `/health` | `ok` once running; says nothing about the database, which the live view does not need |
 
-`vigil-web` (`web/`) is a SvelteKit app run under Node beside `vigil-core`.
-It relays `vigil-core`'s live stream to browsers and reads history and the
-event log straight from Postgres. It writes nothing. Each chart range reads the
-coarsest level that still has its resolution: raw samples up to 6 hours, minute
-rollups up to 7 days, hourly ones for 30 days and a year. Configured by `CORE_URL`
-and `DATABASE_URL`; `web/deploy/package.sh` builds the deployable tarball.
+It is configured entirely from the environment (`/etc/vigil-core.env` in
+production, from `core/deploy/vigil-core.env`). Every value is validated
+before it starts, with every problem listed:
 
-**It has no authentication and binds every interface, deliberately: the LAN is
-treated as trusted** (see [ADR-008](docs/DECISIONS.md)). Anything on the network
-can read the host's state and the event log. Authentication is a planned
-feature, not an oversight, and the decision is void the moment `vigil-web`
-gains a route that writes anything. `vigil-core` itself stays on loopback
-regardless.
+| Variable | Default | |
+|---|---|---|
+| `VIGILD_SOCKET` | | `vigild`'s socket, e.g. `/mnt/vigil/vigild.sock` |
+| `VIGILD_URL` | | `host:port` of a TCP stand-in instead; development only |
+| `DATABASE_URL` | `postgres://vigil@localhost/vigil` | the schema owner |
+| `DATABASE_URL_READONLY` | the same as `DATABASE_URL` | the `SELECT`-only role for history and the event log |
+| `PERSIST_INTERVAL_SECONDS` | `10` | how often a raw sample is written |
+| `RAW_RETENTION_DAYS` | `30` | how long raw samples are kept |
+| `NUT_HOST` | | upsd's address; unset leaves the UPS out rather than showing it broken |
+| `NUT_PORT` | `3493` | |
+| `NUT_UPS` | `apc` | the UPS's name on upsd |
+| `NUT_POLL_SECONDS` | `5` | |
+| `NTFY_URL` | | an ntfy topic URL; unset sends no notifications |
+| `CORE_HOST` | `0.0.0.0` | the one address it listens on; an IP address or `localhost` |
+| `CORE_PORT` | `3001` | the production template sets `3000` |
+| `DAEMON_LOST_AFTER_SECONDS` | `20` | how long `vigild` must be unreachable before that is an event |
+| `WEB_ROOT` | | the dashboard's build; unset serves the API only, as in development |
+
+## The dashboard
+
+`web/` is a SvelteKit app built with `adapter-static` into one prerendered
+page, which vigil-core serves. It has no server of its own: everything comes
+from vigil-core's `/api/*`, so the browser opens the live stream, fetches the
+event log and asks for history as the charts need it. Its script policy is a
+content security policy in the page itself, carrying the hash of each inline
+script SvelteKit emits; vigil-core adds the policies only a header can carry.
 
 ## Development
 
 Without the hardware, `dev/mock-vigild.mjs` and `dev/mock-upsd.mjs` stand in
 for `vigild` and upsd (type a letter and Enter to inject a fault), and
 `dev/docker-compose.yml` runs Postgres with TimescaleDB, the same versions as
-production:
+production. `core/.env.example` points vigil-core at all three:
 
 ```bash
 docker compose -f dev/docker-compose.yml up -d
 node dev/mock-vigild.mjs & node dev/mock-upsd.mjs &
-set -a; . core/.env.example; set +a; cargo run -p vigil-core
+cp core/.env.example core/.env       # once; core/.env is ignored by git
+set -a; . core/.env; set +a; dotnet run --project core/Vigil.Core
 cd web && npm run dev
 ```
+
+`npm run dev` serves the page with hot reload and proxies `/api` and
+`/health` to vigil-core at `VIGIL_CORE_URL` (default
+`http://127.0.0.1:3001`), so the page talks to it exactly as in production.
+To try the built page instead, run `npm run build` in `web/` and start
+vigil-core with `WEB_ROOT=web/build`.
 
 ## License
 

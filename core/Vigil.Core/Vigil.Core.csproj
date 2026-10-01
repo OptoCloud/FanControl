@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <RootNamespace>Vigil.Core</RootNamespace>
+    <UserSecretsId>vigil-core</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- So the tests can reach `internal` helpers whose behaviour matters but which are not
+         part of this assembly's surface - URL parsing, the idle-timeout stream. -->
+    <InternalsVisibleTo Include="Vigil.Core.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Every statement, the schema included, from core/sql/: embedded rather than copied, so a
+         deployment is one self-contained thing and the SQL still has one home that can be read
+         and run by hand (docs/STYLE.md §3.2). -->
+    <EmbeddedResource Include="../sql/*.sql" LogicalName="Vigil.Core.Sql.%(Filename).sql" />
+    <EmbeddedResource Include="../sql/aggregates/*.sql" LogicalName="Vigil.Core.Sql.aggregates.%(Filename).sql" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- sd_notify readiness and the journald console format, both of which vigild has to do by
+         hand in Rust. Microsoft's own package (docs/DECISIONS.md ADR-015). -->
+    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.12" />
+    <PackageReference Include="Npgsql" Version="*" />
+  </ItemGroup>
+
+</Project>

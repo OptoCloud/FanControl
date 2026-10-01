@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Vigil.Core.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
+
+    <!-- xunit.v3 runs on Microsoft.Testing.Platform, which is a real executable rather than a
+         VSTest host. The .NET 10 SDK requires opting into it explicitly, and
+         Microsoft.NET.Test.Sdk (the VSTest bridge) must NOT be referenced alongside it. -->
+    <OutputType>Exe</OutputType>
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="4.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Vigil.Core/Vigil.Core.csproj" />
+  </ItemGroup>
+
+</Project>

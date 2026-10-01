@@ -7,16 +7,15 @@ description = "vigil's hardware daemon: temperatures, drive health and fan contr
 publish.workspace = true
 
 [dependencies]
-vigil-protocol = { path = "../protocol" }
-vigil-logging = { path = "../logging" }
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+time = { version = "0.3.55", features = ["formatting", "macros"] }
 toml = "0.8"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "time", "macros"] }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
 tracing = "0.1.44"
-tracing-subscriber = "0.3.23"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 tracing-journald = "0.3.2"
 tokio-stream = "0.1.19"
 async-stream = "0.3.6"
@@ -26,6 +25,11 @@ tower = { version = "0.5.3", features = ["limit", "load-shed"] }
 workspace = true
 
 [dev-dependencies]
+# preserve_order so the generated contract file shows the real wire order rather than
+# serde_json::Map's alphabetical one: System.Text.Json's reader is order-sensitive in places, so
+# a contract with sorted keys would misrepresent what vigild actually sends. Dev-only, so the
+# daemon's own serialization is unaffected.
+serde_json = { version = "1", features = ["preserve_order"] }
 futures-util = "0.3.34"
 http-body-util = "0.1.5"
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread"] }

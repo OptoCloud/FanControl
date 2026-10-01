@@ -17,9 +17,11 @@ mod curve;
 mod fans;
 mod gpu;
 mod hba;
+mod logging;
 mod mpt3;
 mod notify;
 mod process;
+mod protocol;
 mod sensors;
 mod server;
 mod smart;
@@ -52,7 +54,7 @@ static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 fn main() -> ExitCode {
     // First, before anything can want to log: tracing drops every record silently until a
     // subscriber is installed.
-    vigil_logging::init(DEFAULT_LOG_FILTER);
+    logging::init(DEFAULT_LOG_FILTER);
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let check_only = args.iter().any(|arg| arg == "--check");

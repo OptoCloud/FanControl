@@ -8,25 +8,31 @@
 	import StatTile from '$lib/components/StatTile.svelte';
 	import StatusBadge from '$lib/components/StatusBadge.svelte';
 	import UpsPanel from '$lib/components/UpsPanel.svelte';
-	import type { ChartSeries, HistoryResponse, LiveMessage, RangeKey, SensorReading, SeriesPoints } from '$lib/types';
+	import type {
+		ChartSeries,
+		DriveState,
+		EventRecord,
+		HistoryResponse,
+		LiveMessage,
+		RangeKey,
+		SensorReading,
+		SeriesPoints,
+		Snapshot,
+		UpsState
+	} from '$lib/types';
 	import { summarizeUps } from '$lib/ups';
 
-	let { data } = $props();
+	// The page is a static build with no server of its own, so it starts empty: the live stream's
+	// first messages are vigil-core's full current state, and the event log is fetched once.
+	let snapshot = $state<Snapshot | null>(null);
+	let daemonConnected = $state(false);
+	let drives = $state<DriveState[]>([]);
+	let events = $state<EventRecord[]>([]);
+	let ups = $state<UpsState>({ enabled: false, name: '', reading: null, error: null });
 
-	// The server-rendered values are only the starting point: from mount on, the live stream owns these.
-	// svelte-ignore state_referenced_locally
-	let snapshot = $state(data.snapshot);
-	// svelte-ignore state_referenced_locally
-	let coreConnected = $state(data.coreConnected);
-	// svelte-ignore state_referenced_locally
-	let daemonConnected = $state(data.daemonConnected);
-	// svelte-ignore state_referenced_locally
-	let drives = $state(data.drives);
-	// svelte-ignore state_referenced_locally
-	let events = $state(data.events);
-	// svelte-ignore state_referenced_locally
-	let ups = $state(data.ups);
-	let streamConnected = $state(false);
+	// The stream IS the connection to vigil-core: there is no relay in between any more, so
+	// whether EventSource is open is whether vigil-core can be reached.
+	let stream = $state<'connecting' | 'open' | 'lost'>('connecting');
 	let now = $state(Date.now());
 
 	let range = $state<RangeKey>('1h');
@@ -62,9 +68,10 @@
 		if (stored === 'light' || stored === 'dark') theme = stored;
 
 		// EventSource reconnects on its own; onerror/onopen just keep the header honest about it.
+		// vigil-core's keepalive is a named `keepalive` event, which onmessage never receives.
 		const source = new EventSource('/api/live');
-		source.onopen = () => (streamConnected = true);
-		source.onerror = () => (streamConnected = false);
+		source.onopen = () => (stream = 'open');
+		source.onerror = () => (stream = 'lost');
 		source.onmessage = (message) => {
 			const live = JSON.parse(message.data) as LiveMessage;
 			if (live.type === 'snapshot') snapshot = live.snapshot;
@@ -72,8 +79,9 @@
 			else if (live.type === 'drives') drives = live.drives;
 			else if (live.type === 'event') events = [live.event, ...events].slice(0, 100);
 			else if (live.type === 'ups') ups = live.ups;
-			else if (live.type === 'core') coreConnected = live.connected;
 		};
+
+		void loadEvents();
 
 		const clock = setInterval(() => (now = Date.now()), 1000);
 		const refresh = setInterval(() => void loadHistory(range, false), 30_000);
@@ -88,11 +96,29 @@
 		void loadHistory(range, true);
 	});
 
+	/**
+	 * The newest events, for what the stream cannot replay: it carries only events raised after
+	 * it connects. Merged by id, so one raised between the two requests is not shown twice.
+	 * vigil-core answers [] when the database is down, which leaves the live ones in place.
+	 */
+	async function loadEvents() {
+		try {
+			const response = await fetch('/api/events');
+			if (!response.ok) return;
+			const logged = (await response.json()) as EventRecord[];
+			const live = new Set(events.map((event) => event.id));
+			events = [...events, ...logged.filter((event) => !live.has(event.id))].slice(0, 100);
+		} catch {
+			// The header already says when vigil-core cannot be reached.
+		}
+	}
+
 	async function loadHistory(requested: RangeKey, showLoading: boolean) {
 		if (showLoading) loading = true;
 		try {
 			const response = await fetch(`/api/history?range=${requested}`);
-			if (!response.ok) throw new Error((await response.json().catch(() => null))?.message ?? `HTTP ${response.status}`);
+			// vigil-core explains a failure in plain text ("History is unavailable: ...").
+			if (!response.ok) throw new Error((await response.text().catch(() => '')).trim() || `HTTP ${response.status}`);
 			const result = (await response.json()) as HistoryResponse;
 			// A slow response for a range the user has since left must not overwrite the current one.
 			if (requested === range) {
@@ -195,13 +221,12 @@
 	const tilePoints = (id: string) => temperatureSeries.find((s) => s.id === id)?.points ?? [];
 
 	const status = $derived.by((): { level: 'good' | 'warning' | 'critical'; label: string; detail: string } => {
-		if (!streamConnected)
-			return { level: 'warning', label: 'Connecting', detail: 'Waiting for the live stream from the dashboard server.' };
-		if (!coreConnected)
+		if (stream === 'connecting') return { level: 'warning', label: 'Connecting', detail: 'Waiting for the live stream from vigil-core.' };
+		if (stream === 'lost')
 			return {
 				level: 'critical',
 				label: 'vigil-core unreachable',
-				detail: 'The dashboard cannot reach vigil-core, so nothing live is shown, and history and alerts may be paused with it.'
+				detail: 'This page cannot reach vigil-core, so nothing shown is live. It reconnects on its own.'
 			};
 		if (!daemonConnected)
 			return {

@@ -7,10 +7,9 @@
 //! independent re-arming deadman thread that does the same if the control loop stalls while
 //! the process stays alive. The other two are systemd's watchdog and `ExecStopPost`.
 
-use super::{FanChannel, FanController, PwmMode, lock};
-use std::collections::HashMap;
+use super::{FanChannel, FanController, lock};
 use std::io;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use tracing::error;

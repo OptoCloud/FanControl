@@ -1,5 +1,6 @@
-// Mirrors the Rust crate vigil-protocol (protocol/src/lib.rs), which defines the JSON: vigild's
-// snapshot and vigil-core's live stream. Treat a change there as a change here, and back.
+// Mirrors two definitions of the JSON: vigild's snapshot (Rust, daemon/) and vigil-core's live
+// stream (C#, core/). Each writes its half to a contract.json that types.contract.test.ts checks
+// this file against, so a change on either side fails here until this file follows.
 
 export type SensorCategory = 'cpu' | 'boardAmbient' | 'drive' | 'gpu' | 'memory' | 'hba';
 
@@ -113,17 +114,13 @@ export interface EventRecord {
 	message: string;
 }
 
-/**
- * The live stream: what vigil-core sends on /live, and what vigil-web relays to the browser on
- * /api/live. `core` is vigil-web's own addition: whether it can reach vigil-core.
- */
+/** The live stream: what vigil-core sends on /api/live, the current state first, then every change. */
 export type LiveMessage =
 	| { type: 'snapshot'; snapshot: Snapshot }
 	| { type: 'daemon'; connected: boolean }
 	| { type: 'event'; event: EventRecord }
 	| { type: 'drives'; drives: DriveState[] }
-	| { type: 'ups'; ups: UpsState }
-	| { type: 'core'; connected: boolean };
+	| { type: 'ups'; ups: UpsState };
 
 export type RangeKey = '1h' | '6h' | '24h' | '7d' | '30d' | '1y';
 

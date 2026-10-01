@@ -15,10 +15,10 @@
 
 use crate::config::DriveHealthConfig;
 use crate::process;
+pub use crate::protocol::DriveHealth;
 use crate::sensors::ResolvedSensor;
 use serde_json::Value;
 use std::time::Duration;
-pub use vigil_protocol::DriveHealth;
 
 const ATA_ATTRIBUTE_REALLOCATED_SECTOR_COUNT: u64 = 5;
 const ATA_ATTRIBUTE_CURRENT_PENDING_SECTOR_COUNT: u64 = 197;

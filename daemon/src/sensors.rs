@@ -15,8 +15,8 @@
 //! zones name bays by port. Two keys because there are two questions. The WWN answers "how
 //! is this disk doing" (health, history); the port answers "how is this spot doing" (airflow).
 
+pub use crate::protocol::{SensorCategory, SensorReading};
 use crate::sysfs::{self, SysFs};
-pub use vigil_protocol::{SensorCategory, SensorReading};
 
 /// Declarative description of one sensor (or sensor family) to pull out of hwmon. This is
 /// the whitelist: only sensors described here are ever read, so unconnected or meaningless

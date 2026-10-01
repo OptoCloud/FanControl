@@ -9,3 +9,6 @@ target/
 # .NET build output
 [Bb]in/
 [Oo]bj/
+
+# core/deploy/package.sh staging
+.package/

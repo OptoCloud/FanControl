@@ -7,10 +7,10 @@
 //! from the control loop and never blocks or needs a runtime, because that is all
 //! `broadcast::Sender::send` does; the API task awaits on its receiver.
 
+pub use crate::protocol::{Snapshot, now_rfc3339};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
-pub use vigil_protocol::{Snapshot, now_rfc3339};
 
 /// How many snapshots a subscriber may fall behind by before it starts missing them. At a
 /// two-second poll that is two minutes of slack — far more than a merely busy consumer needs,

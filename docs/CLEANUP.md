@@ -100,9 +100,11 @@ data behind each choice is in ADR-015.
       transition log and a debouncer. Renamed rather than merged (STYLE.md §1.4).
 - [x] `core/src/notify.rs` renamed to `ntfy.rs`: it is an ntfy client, while
       `daemon/src/notify.rs` is sd_notify. One name must not mean two things.
-- [ ] One declaration for every value crossing a language boundary — ports, the DB URL
-      default, and the keepalive/silence relationship. Extend `protocol/contract.json`, which
-      the web tests already read, rather than inventing a second mechanism.
+- [x] One declaration for every value crossing a language boundary. Done by phase 6.7, which
+      left one such value: vigild's keepalive, which vigil-core's silence timeout must outlast.
+      vigild publishes it in `daemon/contract.json` and `DaemonContractTests` checks the
+      relationship. The port and the database URL default no longer cross a boundary: the
+      web's only server-side reader of them is gone.
 
 ## Phase 3 — SQL out of the Rust source
 
@@ -145,9 +147,9 @@ throwaway work.
 - [x] `daemon/src/curve.rs` (447) stays whole and says why: only the first 180 lines are code,
       and it is one job. `scripts/check.sh` now excludes a file that cites STYLE.md §2.1 in its
       first 40 lines, so the ceiling warning lists only files nobody has made the case for.
-- [ ] `core/src/alerts.rs` (517) → snapshot conditions, UPS conditions, drive diff, debouncer.
-      **Deferred: see Phase 6.**
-- [ ] `core/src/runtime.rs` (471) → break up the single 300-line `impl`. **Deferred: see Phase 6.**
+- [x] `core/src/alerts.rs` (517) and `core/src/runtime.rs` (471): replaced rather than split.
+      Their C# ports are split by job from the start: `Alerting/` in four files (6.5) and
+      `Runtime/` in six (6.6), none over 400 lines.
 
 ## Phase 5 — Tailwind + shadcn-svelte
 
@@ -299,16 +301,122 @@ point at which authentication stops being optional. ADR-008 is rewritten to say 
       **Two failures that looked like query bugs were parallel test interference:** xunit runs
       test classes concurrently and these share one Postgres, each truncating the tables it
       uses. They are one serial collection now.
-- [ ] **6.5 Alerting.** Conditions and the debouncer, with every Rust test translated — this is
-      pure logic and the tests are the specification.
-- [ ] **6.6 The API.** `/live` over `TypedResults.ServerSentEvents`, `/api/history`,
-      `/api/events`, and the SvelteKit build served as static files.
-- [ ] **6.7 Cut over.** SvelteKit to `adapter-static`; delete the Rust `core/` and vigil-web's
-      server half; `core-net/` becomes `core/`; new systemd unit; decide framework-dependent
-      versus self-contained versus NativeAOT (needs clang); rewrite ADR-004, ADR-008 and
-      ADR-015's scope, README and ARCHITECTURE.
+- [x] **6.5 Alerting.** Conditions and the debouncer, with every Rust test translated; this is
+      pure logic and the tests are the specification. 117 tests: all 13 from `alerts.rs`, plus
+      five pinning what the port could get wrong: ordinal key order, a return mid-clear
+      resetting the absence count, a threshold of zero, a failed drive announced once, and the
+      bypass/overload wording.
+      `core-net/Vigil.Core/Alerting/` is split the way phase 4 meant to split `alerts.rs`:
+      snapshot conditions, UPS conditions, the debouncer and the drive diff, none over 110 lines.
+      Two things a straight translation would have broken. Conditions are a `SortedDictionary`
+      with `StringComparer.Ordinal`, because the debouncer raises in key order and a
+      culture-aware sort would order events differently from the Rust core. And UPS figures
+      round away from zero, since .NET's banker's rounding turns 150s of runtime into "2 min"
+      where Rust says 3; the ported test catches exactly that.
+      **Fixed on the way:** `core-net/` had no `.gitattributes` line, so with `core.autocrlf`
+      on Windows every C# file checked out CRLF and `dotnet format --verify-no-changes` failed
+      on all of them. It is `eol=lf` now, matching `.editorconfig`.
+      **Open, Windows only:** `NutClientTests.AClosedConnectionIsReportedAndRetried` fails here
+      intermittently (most runs) and passes on Linux. The fake upsd closes before reading, so Windows answers the client's
+      `LIST VAR` with a reset and the reason is the socket's wording, not "upsd closed the
+      connection". Untouched, since it is the client's behaviour (6.3), not alerting's.
+- [x] **6.6 The API.** `/api/live` over `TypedResults.ServerSentEvents`, `/api/history`,
+      `/api/events`, and the SvelteKit build served as static files. 147 tests.
+      **Scope corrected while starting:** `/live` streams the runtime's state, and no step had
+      ported `core/src/runtime.rs`, so it is here. `Vigil.Core/Runtime/` is the single owner of
+      state on one input channel, as in Rust, with all four Rust tests translated. The pollers
+      are hosted services that only forward into that channel. It reaches the database through
+      `IRuntimeStore`, so "the database is down" is a fast test case rather than a connect to a
+      closed port. The runtime still does not create or migrate the schema (6.4a's rule).
+      `DatabaseGate` keeps the Rust behaviour Npgsql's pool would otherwise lose: a lost
+      connection closes the gate for 15s, because each attempt against a dead host waits out the
+      connect timeout on the loop that feeds the live view. A `PostgresException` (the server
+      answered) leaves it open, so one bad row does not stop history.
+      ntfy is an `HttpClient` now; `curl` is gone from vigil-core.
+      Decided while doing it, each worth a look at review:
+      the browser path is `/api/live`, not `/live`, because that is what the page already
+      requests and vigil-web, the only `/live` consumer, goes away in 6.7;
+      the keepalive is a named `keepalive` event, not an SSE comment, because the framework's
+      formatter writes events only (an SSE comment would mean hand-writing frames, STYLE.md
+      §3.1), and EventSource gives a named event to no handler the page has;
+      vigil-web's `core` message is not sent: the page's own stream is now the connection to
+      vigil-core, so EventSource's `onerror`/`onopen` already say it;
+      the CSP header carries only `frame-ancestors`, `object-src`, `base-uri` and `form-action`.
+      Script and style policy must come from the static build's `<meta>` tag in SvelteKit's
+      hash mode, since a header `script-src` would block the build's inline scripts. 6.7 has
+      to switch `vite.config.ts` to `mode: 'hash'`.
+      **A bug the smoke test caught:** a scripted edit to `Program.cs` matched nothing, so the
+      process served only `/health` while every unit test passed, because each composed its
+      own app. `VigilServicesTests` now builds the real composition with `ValidateOnBuild`.
+      Smoke-tested against `dev/mock-vigild.mjs` with no database: state on connect, a
+      snapshot every 2s, history 503 with its message, the event log `[]`, and only state
+      changes in the log (ASP.NET's per-request lines are filtered to warnings).
+      **Not run here:** the database test for the new `select_recent_events.sql`. Docker was
+      not running.
+      **Decided for 6.7:** one listener, on the LAN, and no loopback-only second one (ADR-017).
+- [x] **6.7 Cut over.** The Rust `core/` and vigil-web's server half are deleted; `core-net/` is
+      `core/`; the Rust workspace is vigild alone. `scripts/check.sh` is green on Windows:
+      107 Rust tests, 136 .NET (11 skipped without a database), 31 web.
+      Done in this step, each recorded where it belongs:
+      **One LAN listener** (ADR-017). `CORE_HOST` defaults to `0.0.0.0` and must be an address;
+      `CORE_ALLOW_NON_LOOPBACK` is gone. ADR-008 still holds because every route is a GET, and
+      `ApiTests.EveryRouteIsAGet` now enforces that. Production keeps port 3000.
+      **Rust folded into vigild.** `protocol/` and `logging/` became `daemon/src/protocol/` and
+      `daemon/src/logging.rs`, keeping only what vigild produces; the SSE parser and the
+      live-stream types went with the Rust core.
+      **The contract, split by producer** (ADR-017). `daemon/contract.json` from vigild's tests
+      (with its keepalive, which nothing published before), `core/contract.json` from
+      vigil-core's (which rewrite it and fail once when stale), and the web test reads both.
+      **The schema moved to C#.** `Data/SchemaSetup.cs` is `timescale.rs` ported as it was:
+      idempotent setup on every database (re)connect. **Not EF Core migrations,** which this
+      plan named: porting the existing, verified behaviour came first, and a migration history
+      is deferred until something needs one (ADR-016).
+      **Deployment:** self-contained single-file `linux-x64` (`core/deploy/package.sh`), not
+      framework-dependent and not NativeAOT (ADR-016). `core/deploy/vigil-core.service` is
+      `Type=notify` and takes the hardening baseline except `MemoryDenyWriteExecute`, which the
+      JIT cannot run under.
+      **The web is a static build** served by vigil-core: `adapter-static`, CSP in hash mode as
+      a `<meta>` tag, the theme script as `static/theme.js`, the page filling itself from
+      `/api/live` and `/api/events`, and `npm run dev` proxying `/api` to vigil-core.
+      **Fixed on the way:** the Windows-only NutClient test failure from 6.5. A reset from
+      upsd and an end of stream now both read "upsd closed the connection", since which one the
+      client sees depends on platform and timing. `web/**` joined `core/**` as `eol=lf`, for
+      the same CRLF reason. **And a bug older than this phase:** `global.json` sat in `core-net/`,
+      but `dotnet` looks for it from the working directory, and every command here runs from the
+      repo root. So `check.sh` and CI-like local runs built with the 11.0 RC SDK that the pin
+      exists to avoid. It is at the repo root now, and builds resolve to 10.0.x.
+      Docs: ADR-003, ADR-008 and ADR-015 amended and ADR-016/017 added; SECURITY.md and
+      CLAUDE.md rewritten for two processes.
+      Verified: the packaged layout's pieces run together against `dev/mock-vigild.mjs`;
+      Chrome renders the dashboard live under its CSP with no console errors; and
+      `core/deploy/package.sh` builds `vigil-core.tar.gz` (one 102 MB binary plus `web/`).
+      **Not verified here:** anything against a real database (Docker was not running), so
+      `SchemaSetup` has its pure tests but not yet a run against TimescaleDB 2.30.2; and the
+      package and unit on the host. Run the database tests with
+      `VIGIL_TEST_DATABASE_URL` before deploying.
+      **Seen, not chased:** with the database down, the empty history charts print hundreds of
+      x-axis date labels. Chart code was not touched by this phase.
 
-### Deferred until this lands
+### Follow-up: vigil-core on NativeAOT
 
-`core/src/alerts.rs` (517) and `core/src/runtime.rs` (471) are not split in phase 4: they are
-exactly what 6.5 replaces.
+- [ ] **Build vigil-core with NativeAOT instead of as a self-contained JIT build.** Not done in
+      6.7 (ADR-016) because nothing here could build it, and porting the behaviour came first.
+      **What it buys:** vigil-core's unit can set `MemoryDenyWriteExecute=true`, closing the one
+      gap in its hardening baseline (the JIT is what forces the omission today). A smaller
+      binary and faster start are expected too, but they are not the reason.
+      **What it needs:**
+      - **A Linux build.** NativeAOT does not cross-compile between operating systems, so
+        `core/deploy/package.sh` can no longer build vigil-core on Windows. Build it in CI on
+        Linux, or in WSL or a container, with `clang` and `zlib1g-dev` installed.
+      - **`PublishAot=true`** in `Vigil.Core.csproj`. That turns on the trim and AOT analyzers,
+        and with warnings as errors every reflection path becomes a build failure to fix:
+        - JSON: a `JsonSerializerContext` source generator behind `VigilJson`, covering
+          `LiveMessage`'s polymorphism, `HistoryResponse`, `EventRecord` and vigild's
+          `Snapshot`;
+        - options: the configuration binding source generator for `VigilOptions`;
+        - Npgsql: `NpgsqlSlimDataSourceBuilder` in `VigilDataSources`, enabling only the type
+          handlers vigil uses;
+        - minimal APIs: the request delegate generator, which `PublishAot` switches on.
+      **Done when:** the binary is built on Linux with zero AOT warnings; the unit sets
+      `MemoryDenyWriteExecute=true` and loses its `NOT set` comment; ADR-016 is amended; and the
+      AOT binary passes the database tests and a smoke test against `dev/mock-vigild.mjs`.

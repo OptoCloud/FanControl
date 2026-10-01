@@ -1,0 +1,56 @@
+# C# style for vigil. `dotnet format` is the only word on formatting, as rustfmt is for Rust
+# and prettier is for the web (docs/STYLE.md §8-§10). scripts/check.sh verifies it.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+indent_style = space
+trim_trailing_whitespace = true
+
+[*.{cs,csproj,props,targets}]
+indent_size = 4
+
+# Matches rustfmt.toml's max_width, so one line length across the whole repo.
+max_line_length = 140
+
+[*.cs]
+csharp_style_namespace_declarations = file_scoped:error
+csharp_using_directive_placement = outside_namespace:error
+dotnet_sort_system_directives_first = true
+csharp_prefer_braces = when_multiline:suggestion
+csharp_style_var_for_built_in_types = false:suggestion
+csharp_style_var_when_type_is_apparent = true:suggestion
+dotnet_style_readonly_field = true:error
+dotnet_style_require_accessibility_modifiers = always:error
+
+# STYLE.md §4.3: full words, and booleans that read as assertions.
+dotnet_naming_rule.constants_are_pascal_case.severity = error
+dotnet_naming_rule.constants_are_pascal_case.symbols = constants
+dotnet_naming_rule.constants_are_pascal_case.style = pascal_case
+dotnet_naming_symbols.constants.applicable_kinds = field
+dotnet_naming_symbols.constants.required_modifiers = const
+dotnet_naming_style.pascal_case.capitalization = pascal_case
+
+# The SDK's own analyzers, kept at error except where the style is a genuine judgement call.
+dotnet_diagnostic.CA1848.severity = none
+dotnet_diagnostic.CA1812.severity = none
+
+# STYLE.md §10: private fields are _camelCase, so a field never reads as a local or a parameter.
+# Static readonly ones are PascalCase like constants, which is what they are used as; the more
+# specific rule wins.
+dotnet_naming_rule.static_readonly_fields_are_pascal_case.severity = error
+dotnet_naming_rule.static_readonly_fields_are_pascal_case.symbols = static_readonly_fields
+dotnet_naming_rule.static_readonly_fields_are_pascal_case.style = pascal_case
+dotnet_naming_symbols.static_readonly_fields.applicable_kinds = field
+dotnet_naming_symbols.static_readonly_fields.applicable_accessibilities = *
+dotnet_naming_symbols.static_readonly_fields.required_modifiers = static, readonly
+dotnet_naming_rule.private_fields_are_underscored.severity = error
+dotnet_naming_rule.private_fields_are_underscored.symbols = private_fields
+dotnet_naming_rule.private_fields_are_underscored.style = underscored_camel_case
+dotnet_naming_symbols.private_fields.applicable_kinds = field
+dotnet_naming_symbols.private_fields.applicable_accessibilities = private
+dotnet_naming_symbols.private_fields.required_modifiers =
+dotnet_naming_style.underscored_camel_case.capitalization = camel_case
+dotnet_naming_style.underscored_camel_case.required_prefix = _

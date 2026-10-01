@@ -12,6 +12,7 @@
 //!
 //!   curl --unix-socket /run/vigil/vigild.sock http://localhost/status
 
+use crate::protocol;
 use crate::status::StatusHub;
 use axum::Router;
 use axum::extract::State;
@@ -26,8 +27,9 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio_stream::Stream;
 
 /// How long an event stream stays silent before a keepalive comment is sent, which is also
-/// what notices that a consumer has gone away.
-const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
+/// what notices that a consumer has gone away. Declared in the protocol module because
+/// vigil-core's read timeout depends on it, and the contract carries it there.
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(protocol::STREAM_KEEPALIVE_SECONDS);
 
 /// How often the server checks whether the process is shutting down. Short enough that a
 /// SIGTERM is not visibly delayed, long enough to cost nothing.

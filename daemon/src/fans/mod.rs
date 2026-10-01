@@ -9,10 +9,10 @@ mod controller;
 mod safety;
 mod stall;
 
+pub use crate::protocol::{FanStatus, PwmMode};
 pub use controller::SysfsFanController;
 pub use safety::FanSafetyGuard;
 pub use stall::StallDetector;
-pub use vigil_protocol::{FanStatus, PwmMode};
 
 use crate::sysfs;
 use std::io;

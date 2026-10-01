@@ -1,4 +1,4 @@
-// A stand-in for vigild, for developing vigil-core and vigil-web without the hardware
+// A stand-in for vigild, for developing vigil-core and the dashboard without the hardware
 // (and on Windows, where the real daemon's unix socket isn't an option). Serves the same
 // GET /status and GET /events over TCP, with plausibly wandering temperatures.
 //

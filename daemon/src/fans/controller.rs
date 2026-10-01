@@ -4,7 +4,7 @@
 //! the channel handed back to automatic control, while the rest keep being driven.
 
 use super::{FanChannel, FanController, FanStatus, PwmMode, lock};
-use crate::sysfs::{self, SysFs};
+use crate::sysfs::SysFs;
 use std::collections::HashMap;
 use std::io;
 use std::sync::{Arc, Mutex};

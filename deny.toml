@@ -1,9 +1,9 @@
-# Dependency gate for the Rust workspace. docs/SECURITY.md §9 is the prose version.
+# Dependency gate for vigild, the only Rust in vigil. docs/SECURITY.md §9 is the prose version.
 # Run by scripts/check.sh: `cargo deny --all-features check`.
 
 [graph]
-# vigild and vigil-core only ever run on Linux; they are built on Windows and tested on both,
-# so those three targets are the whole surface worth gating.
+# vigild only ever runs on Linux; it is built on Windows and tested on both, so those three
+# targets are the whole surface worth gating.
 targets = [
 	"x86_64-unknown-linux-musl",
 	"x86_64-unknown-linux-gnu",
@@ -41,13 +41,14 @@ multiple-versions = "warn"
 wildcards = "deny"
 allow-wildcard-paths = true
 
-# ADR-003: no TLS stack. One needs C in it, which would end the static musl build from a
-# machine with no cross toolchain. HTTPS for ntfy goes through curl instead. If one of these
-# ever appears in the tree, something pulled HTTPS in by accident - most likely an HTTP client
-# crate added with default features.
+# ADR-003: no TLS stack in vigild. One needs C in it, which would end the static musl build from
+# a machine with no cross toolchain, and vigild talks only to its own unix socket. (vigil-core,
+# which sends ntfy over HTTPS, is .NET and has TLS built in; this gate does not reach it.) If
+# one of these ever appears in the tree, something pulled HTTPS in by accident - most likely an
+# HTTP client crate added with default features.
 #
 # tokio used to be banned here under ADR-004 ("no async runtime of ours"). ADR-015 supersedes
-# that: both binaries now run axum, so tokio is a deliberate direct dependency.
+# that: vigild runs axum, so tokio is a deliberate direct dependency.
 deny = [
 	{ crate = "openssl" },
 	{ crate = "openssl-sys" },
