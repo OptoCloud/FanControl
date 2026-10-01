@@ -118,4 +118,26 @@ public sealed class NutClientTests
 
         Assert.IsType<UpsPoll.Failed>(polls[0]);
     }
+
+    [Fact]
+    public async Task AServiceThatIsNotUpsdIsRefusedAndNamedInTheReason()
+    {
+        // NUT_PORT pointing at, say, a web server: its answer is not read as a UPS with no variables.
+        var polls = await Collect(FakeUpsd("HTTP/1.1 400 Bad Request\r\n\r\n"), 1);
+
+        var failed = Assert.IsType<UpsPoll.Failed>(polls[0]);
+        Assert.Contains("not an answer from upsd (it began \"HTTP/1.1 400 Bad Request\")", failed.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AnAnswerThatNeverEndsIsCutOffRatherThanReadForever()
+    {
+        // One line with no end: counting lines would never stop this, the byte budget does.
+        var endless = "BEGIN LIST VAR apc\nVAR apc ups.status \"" + new string('x', 200 * 1024);
+
+        var polls = await Collect(FakeUpsd(endless), 1);
+
+        var failed = Assert.IsType<UpsPoll.Failed>(polls[0]);
+        Assert.Contains("bytes allowed", failed.Reason, StringComparison.Ordinal);
+    }
 }

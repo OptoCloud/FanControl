@@ -163,7 +163,7 @@ realistic cases here, not an attacker.
 | child process stdout | 1 MiB, then the child is killed (`daemon/src/process.rs`) |
 | vigild's response headers, in vigil-core | 16 KiB (`VigildClient`) |
 | vigild's stream, in vigil-core | 50s of silence ends it (`IdleTimeoutStream`); **no maximum line length yet** |
-| upsd `LIST VAR` response | 10s per request; **no total cap yet** |
+| upsd `LIST VAR` response | 10s of silence; 64 KiB per answer (`ReadBudgetStream`), which must begin `BEGIN LIST VAR` |
 
 A read with no bound is a memory-exhaustion path. Add the cap when you add the read, not after.
 

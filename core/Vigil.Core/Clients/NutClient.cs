@@ -35,6 +35,13 @@ public sealed class NutClient(IOptions<VigilOptions> options)
     private static readonly TimeSpan MinimumRetry = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan MaximumRetry = TimeSpan.FromSeconds(30);
 
+    /// <summary>
+    /// The most one <c>LIST VAR</c> answer may be. upsd answers for one UPS with a few dozen
+    /// variables, a few KiB; an answer past this is not upsd, and reading it would grow without
+    /// end (docs/SECURITY.md §4.1).
+    /// </summary>
+    private const long MaximumAnswerBytes = 64 * 1024;
+
     private readonly VigilOptions _options = options.Value;
 
     /// <summary>
@@ -126,10 +133,12 @@ public sealed class NutClient(IOptions<VigilOptions> options)
 
         await using var network = new NetworkStream(socket, ownsSocket: false);
         await using var guarded = new IdleTimeoutStream(network, RequestTimeout);
-        using var reader = new StreamReader(guarded, Encoding.UTF8, detectEncodingFromByteOrderMarks: false);
+        await using var budget = new ReadBudgetStream(guarded);
+        using var reader = new StreamReader(budget, Encoding.UTF8, detectEncodingFromByteOrderMarks: false);
 
         while (!cancellationToken.IsCancellationRequested)
         {
+            budget.Allow(MaximumAnswerBytes);
             yield return await ListVarAsync(network, reader, _options.NutUps, cancellationToken).ConfigureAwait(false);
 
             try
@@ -156,7 +165,10 @@ public sealed class NutClient(IOptions<VigilOptions> options)
             ? "upsd closed the connection"
             : error.Message;
 
-    /// <summary>One <c>LIST VAR</c> exchange: the variables, or upsd's own error word.</summary>
+    /// <summary>
+    /// One <c>LIST VAR</c> exchange: the variables, or upsd's own error word. Throws
+    /// <see cref="IOException"/> when the answer is not upsd's, which ends the connection.
+    /// </summary>
     private static async Task<UpsPoll> ListVarAsync(Stream stream, StreamReader reader, string ups, CancellationToken cancellationToken)
     {
         await stream.WriteAsync(Encoding.UTF8.GetBytes($"LIST VAR {ups}\n"), cancellationToken).ConfigureAwait(false);
@@ -173,6 +185,12 @@ public sealed class NutClient(IOptions<VigilOptions> options)
                 return new UpsPoll.Failed($"upsd: {line["ERR ".Length..]}");
             }
 
+            // Anything else first is not upsd: most likely NUT_PORT names some other service.
+            if (lines.Count == 0 && !line.StartsWith("BEGIN LIST VAR", StringComparison.Ordinal))
+            {
+                throw new IOException($"not an answer from upsd (it began \"{Printable(line)}\"); is NUT_PORT upsd's port?");
+            }
+
             lines.Add(line);
 
             if (line.StartsWith("END LIST VAR", StringComparison.Ordinal))
@@ -181,6 +199,14 @@ public sealed class NutClient(IOptions<VigilOptions> options)
                 return new UpsPoll.Read(NutProtocol.ToReading(ups, variables, Rfc3339.Now()));
             }
         }
+    }
+
+    /// <summary>The start of a line from an unknown peer, safe to put in a log line.</summary>
+    private static string Printable(string line)
+    {
+        const int Shown = 40;
+        var start = line.Length > Shown ? line[..Shown] : line;
+        return string.Concat(start.Select(character => char.IsControl(character) ? '?' : character));
     }
 
     private static async Task Goodbye(Stream stream)
