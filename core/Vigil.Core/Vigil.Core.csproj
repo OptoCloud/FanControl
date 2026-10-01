@@ -23,7 +23,7 @@
     <!-- sd_notify readiness and the journald console format, both of which vigild has to do by
          hand in Rust. Microsoft's own package (docs/DECISIONS.md ADR-015). -->
     <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.12" />
-    <PackageReference Include="Npgsql" Version="*" />
+    <PackageReference Include="Npgsql" Version="10.0.3" />
   </ItemGroup>
 
 </Project>

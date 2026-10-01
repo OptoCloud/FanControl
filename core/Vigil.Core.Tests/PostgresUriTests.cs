@@ -78,6 +78,8 @@ public sealed class PostgresUriTests
         Assert.Equal(15, parsed.CommandTimeout);
         // So pg_stat_activity says which process a connection belongs to.
         Assert.Equal("vigil-test", parsed.ApplicationName);
+        // No Kerberos probe: it fails noisily on a guest without krb5-libs, and vigil never uses it.
+        Assert.Equal(GssEncryptionMode.Disable, parsed.GssEncryptionMode);
     }
 
     [Theory]

@@ -364,10 +364,19 @@ container's bind mount.
 
 `vigil-core` runs in an unprivileged LXC, with `vigild`'s socket directory
 bind-mounted in as described above. `core/deploy/package.sh` builds
-`vigil-core.tar.gz`: a self-contained, single-file Linux build of about
-100 MB (the host needs no .NET runtime; [ADR-016](docs/DECISIONS.md) has why
-not NativeAOT), the
-dashboard's static build beside it as `web/`, and the unit and env template.
+`vigil-core.tar.gz`: a self-contained, single-file `linux-x64` build of about
+100 MB (the guest needs no .NET runtime; [ADR-016](docs/DECISIONS.md) has why
+not NativeAOT), the dashboard's static build beside it as `web/`, and the unit
+and env template.
+
+The guest is Debian. Self-contained still leaves a few native libraries to the
+system, all in a standard install:
+
+```bash
+apt install libstdc++6 libgcc-s1 libssl3 zlib1g ca-certificates
+```
+
+No `libicu`: vigil-core runs with invariant globalization.
 
 | File | Goes to |
 |---|---|

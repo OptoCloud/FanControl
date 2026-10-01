@@ -91,6 +91,11 @@ public static class PostgresUri
     {
         builder.CommandTimeout = (int)Limits.DatabaseStatementTimeout.TotalSeconds;
         builder.ApplicationName = applicationName;
+
+        // vigil authenticates with a password. Left at its default, Npgsql tries GSS encryption
+        // first, which loads libgssapi_krb5 and, on a guest without it (Alpine has no krb5-libs
+        // by default), logs a load failure on every connection.
+        builder.GssEncryptionMode = GssEncryptionMode.Disable;
         return builder.ConnectionString;
     }
 

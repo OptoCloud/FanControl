@@ -371,7 +371,7 @@ point at which authentication stops being optional. ADR-008 is rewritten to say 
       idempotent setup on every database (re)connect. **Not EF Core migrations,** which this
       plan named: porting the existing, verified behaviour came first, and a migration history
       is deferred until something needs one (ADR-016).
-      **Deployment:** self-contained single-file `linux-x64` (`core/deploy/package.sh`), not
+      **Deployment:** self-contained single-file `linux-x64` (`core/deploy/package.sh`), for a Debian guest, not
       framework-dependent and not NativeAOT (ADR-016). `core/deploy/vigil-core.service` is
       `Type=notify` and takes the hardening baseline except `MemoryDenyWriteExecute`, which the
       JIT cannot run under.
@@ -390,10 +390,16 @@ point at which authentication stops being optional. ADR-008 is rewritten to say 
       Verified: the packaged layout's pieces run together against `dev/mock-vigild.mjs`;
       Chrome renders the dashboard live under its CSP with no console errors; and
       `core/deploy/package.sh` builds `vigil-core.tar.gz` (one 102 MB binary plus `web/`).
-      **Not verified here:** anything against a real database (Docker was not running), so
-      `SchemaSetup` has its pure tests but not yet a run against TimescaleDB 2.30.2; and the
-      package and unit on the host. Run the database tests with
-      `VIGIL_TEST_DATABASE_URL` before deploying.
+      **Verified afterwards, for the CT 203 deploy:** the database tests pass against a fresh
+      TimescaleDB 2.30.2, and `SchemaSetup` there creates exactly the 15 jobs the Rust core
+      did (diffed, schedules and configs included). The package ran in `alpine:3.24` (built for musl
+      then) against a copy of a database the Rust core had migrated: it took the
+      already-migrated path, wrote samples, and served every route. CT 203 is moving to
+      Debian instead, so the package is `linux-x64` again, and runs the same way in
+      `debian:13-slim` with only `libstdc++6 libgcc-s1 libssl3 zlib1g ca-certificates`. Two fixes came out of that: the tarball now carries the binary's execute bit
+      (Windows has none to give it), and Npgsql's Kerberos probe is off, which otherwise logged
+      a missing `libgssapi_krb5` on every connection. `Npgsql` is pinned, not `*`.
+      **Not verified here:** the package on the host itself, and the OpenRC side.
       **Seen, not chased:** with the database down, the empty history charts print hundreds of
       x-axis date labels. Chart code was not touched by this phase.
 

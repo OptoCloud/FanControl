@@ -182,7 +182,8 @@ work and there is still **no TLS stack** (ADR-003), which `cargo-deny` enforces.
 *Decided 2026-10-01.* The Rust vigil-core and vigil-web's Node server are replaced by one
 ASP.NET Core process (docs/CLEANUP.md phase 6). vigild stays Rust: it runs as root and drives
 the fans, and keeping it small is a safety property there, not a preference.
-vigil-core ships as a self-contained single-file `linux-x64` build (`core/deploy/package.sh`):
+vigil-core ships as a self-contained single-file `linux-x64` build (`core/deploy/package.sh`),
+for the Debian guest it runs in, where the systemd unit applies as written:
 the host needs no .NET runtime. NativeAOT was considered and not taken: it needs `clang`, which
 is not installed where vigil is built, and ASP.NET's reflection paths are not all AOT-safe.
 *Consequence:* the JIT writes the code it runs, so vigil-core's unit cannot set
