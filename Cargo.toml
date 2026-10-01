@@ -1,11 +1,32 @@
 [workspace]
-members = ["protocol", "daemon", "core"]
+members = ["protocol", "logging", "daemon", "core"]
 resolver = "3"
 
 [workspace.package]
 edition = "2024"
 license = "AGPL-3.0-or-later"
 publish = false
+
+# Lint policy for the whole workspace. docs/STYLE.md §8 is the prose version.
+# Members opt in with `[lints] workspace = true`.
+[workspace.lints.rust]
+# Confined to daemon's two audited sites (hba.rs's ioctl, main.rs's signal handlers), each of
+# which carries an explicit #[allow] and a // SAFETY: line. Nothing else may introduce unsafe.
+unsafe_code = "deny"
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+# STYLE.md §6: a failure that must not take the process down is logged and retried, never
+# unwrapped. Tests allow these back via #![cfg_attr(test, allow(...))].
+unwrap_used = "warn"
+expect_used = "warn"
+# Loose ends should not reach a commit.
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+# Logging goes to stderr so journald/supervise-daemon capture it with a priority.
+print_stdout = "warn"
 
 [profile.release]
 opt-level = "s"

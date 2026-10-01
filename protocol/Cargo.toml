@@ -8,6 +8,15 @@ publish.workspace = true
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+time = { version = "0.3.55", features = ["formatting", "parsing", "macros"] }
 
 [dev-dependencies]
-serde_json = "1"
+# preserve_order so the generated contract file shows the real wire order rather than
+# serde_json::Map's alphabetical one. The order matters: an internally tagged enum puts "type"
+# first on the wire, and System.Text.Json's polymorphic reader requires it there, so a contract
+# with sorted keys misrepresents what vigil actually sends. Dev-dependency only, so production
+# builds are unaffected.
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[lints]
+workspace = true

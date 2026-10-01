@@ -11,9 +11,35 @@ ExecStart=/opt/vigil-core/vigil-core
 Restart=always
 RestartSec=5
 
+# Sandboxing. docs/SECURITY.md §3.3. vigil-core reads vigild's socket, upsd and
+# Postgres, listens on loopback, and shells out to curl for ntfy. It writes
+# nothing to disk and needs no privilege at all, so it takes the lot.
 NoNewPrivileges=true
-ProtectSystem=full
+# "strict", not "full": vigil-core logs to stderr and writes no file. The socket
+# directory is listed read-write because connecting to a unix socket wants write
+# access to it, and with a leading "-" a missing bind mount does not stop the
+# unit from starting (it retries the connection anyway).
+ProtectSystem=strict
+ReadWritePaths=-/mnt/vigil
 ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+# vigild's socket (AF_UNIX), upsd and Postgres (AF_INET/AF_INET6).
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+LockPersonality=true
+MemoryDenyWriteExecute=true
+# Runs as an unprivileged user and needs no capability whatsoever: it binds a
+# port above 1024 and opens no device.
+CapabilityBoundingSet=
 
 [Install]
 WantedBy=multi-user.target

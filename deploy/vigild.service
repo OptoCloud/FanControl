@@ -34,11 +34,41 @@ ExecStopPost=/bin/sh /opt/vigil/release-fans.sh
 Restart=on-failure
 RestartSec=5
 
+# Sandboxing. docs/SECURITY.md §3.3 is the baseline; the four directives this
+# unit does NOT take are listed at the bottom with the reason, because each one
+# would break something this daemon exists to do.
 NoNewPrivileges=true
 ProtectHome=true
 # "full", not "strict": makes /usr, /boot and /etc read-only but leaves /sys,
 # /dev (the mpt3ctl ioctl) and /run (the API socket) alone.
 ProtectSystem=full
+PrivateTmp=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+# The status API is a unix socket and there is deliberately no TCP code path in
+# the daemon at all (scripts/check.sh enforces that), so AF_UNIX is the whole
+# network surface it needs: sd_notify's datagram and the API socket. A future
+# change that tried to open a port would fail here as well as in review.
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+LockPersonality=true
+
+# ProtectKernelTunables: NOT set, because it mounts /sys read-only and this
+#   daemon's entire job is writing /sys/class/hwmon/*/pwmN. With it, taking a
+#   channel to manual fails at startup and no fan is ever driven.
+# PrivateDevices: NOT set, because the HBA temperature is read by ioctl on
+#   /dev/mpt3ctl, and nvidia-smi needs the nvidia device nodes.
+# MemoryDenyWriteExecute: NOT set, because it would also apply to smartctl and
+#   nvidia-smi, vendor binaries whose memory behaviour is not ours to promise.
+# CapabilityBoundingSet: NOT set yet. The daemon runs as root and needs CAP_CHOWN
+#   for the socket's uid/gid, and smartctl may need CAP_SYS_RAWIO for SG_IO on
+#   some kernels. Narrowing it blind risks losing fan control or drive health, so
+#   it has to be established on the target host - docs/CLEANUP.md tracks it.
 
 [Install]
 WantedBy=multi-user.target

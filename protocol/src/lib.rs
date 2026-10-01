@@ -6,9 +6,16 @@
 //! Field names are the JSON contract (camelCase on the wire). vigil-web's TypeScript types
 //! in web/src/lib/types.ts mirror these; treat a rename here as a change to both.
 
+// A panic in a test IS the failure report; the lint is aimed at production paths.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
+pub mod limits;
+pub mod sse;
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
+use time::OffsetDateTime;
 
 // ---------------------------------------------------------------- vigild's snapshot
 
@@ -233,9 +240,16 @@ pub enum LiveMessage {
 
 // ---------------------------------------------------------------- time
 
+/// Exactly three subsecond digits and a literal Z, which is the format already on the wire
+/// and pinned by protocol/contract.json. `time`'s own Rfc3339 emits as many subsecond digits
+/// as the value needs, so it would produce "...:27Z" for a whole second and change the
+/// contract; this description does not.
+const RFC3339_MILLIS: &[time::format_description::FormatItem<'_>] =
+    time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z");
+
 /// Current time as RFC 3339 UTC with millisecond precision, e.g. "2026-09-21T20:39:27.482Z".
 pub fn now_rfc3339() -> String {
-    rfc3339(SystemTime::now())
+    format_utc(OffsetDateTime::now_utc())
 }
 
 pub fn rfc3339(time: SystemTime) -> String {
@@ -245,29 +259,18 @@ pub fn rfc3339(time: SystemTime) -> String {
 
 /// Milliseconds since the Unix epoch as RFC 3339 UTC. Before 1970 is clamped to the epoch.
 pub fn rfc3339_from_millis(millis: i64) -> String {
-    let millis = millis.max(0) as u64;
-    let seconds = millis / 1000;
-    let (days, second_of_day) = (seconds / 86_400, seconds % 86_400);
-
-    // Days since 1970-01-01 to a proleptic Gregorian date (Howard Hinnant's civil_from_days).
-    let shifted = days + 719_468;
-    let era = shifted / 146_097;
-    let day_of_era = shifted % 146_097;
-    let year_of_era = (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_index = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
-    let month = if month_index < 10 { month_index + 3 } else { month_index - 9 };
-    let year = year_of_era + era * 400 + u64::from(month <= 2);
-
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
-        second_of_day / 3_600,
-        second_of_day % 3_600 / 60,
-        second_of_day % 60,
-        millis % 1000
-    )
+    let nanos = i128::from(millis.max(0)) * 1_000_000;
+    OffsetDateTime::from_unix_timestamp_nanos(nanos).map_or_else(|_| format_utc(OffsetDateTime::UNIX_EPOCH), format_utc)
 }
+
+fn format_utc(at: OffsetDateTime) -> String {
+    // The only way this fails is a format description that cannot represent the value, and
+    // RFC3339_MILLIS can represent every instant OffsetDateTime holds.
+    at.format(RFC3339_MILLIS).unwrap_or_else(|_| "1970-01-01T00:00:00.000Z".to_owned())
+}
+
+#[cfg(test)]
+mod contract;
 
 #[cfg(test)]
 mod tests {

@@ -1,0 +1,62 @@
+# Dependency gate for the Rust workspace. docs/SECURITY.md §9 is the prose version.
+# Run by scripts/check.sh: `cargo deny --all-features check`.
+
+[graph]
+# vigild and vigil-core only ever run on Linux; they are built on Windows and tested on both,
+# so those three targets are the whole surface worth gating.
+targets = [
+	"x86_64-unknown-linux-musl",
+	"x86_64-unknown-linux-gnu",
+	"x86_64-pc-windows-msvc",
+]
+
+[advisories]
+version = 2
+yanked = "deny"
+# No exceptions at present. An accepted advisory goes here WITH the reason it cannot be
+# reached in vigil, and a line in docs/CLEANUP.md to remove it.
+ignore = []
+
+[licenses]
+version = 2
+# vigil itself is AGPL-3.0-or-later. Its own crates are `publish = false`, so they are skipped
+# rather than listed here: a copyleft licence must never be allowed in from a DEPENDENCY.
+allow = [
+	"MIT",
+	"Apache-2.0",
+	"BSD-3-Clause",
+	"BSL-1.0",
+	"Unicode-3.0",
+	"Unlicense",
+	"Zlib",
+]
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+# Deny `version = "*"` on a registry crate, but not our own `path` dependencies, which are
+# versionless by nature.
+wildcards = "deny"
+allow-wildcard-paths = true
+
+# ADR-003: no TLS stack. One needs C in it, which would end the static musl build from a
+# machine with no cross toolchain. HTTPS for ntfy goes through curl instead. If one of these
+# ever appears in the tree, something pulled HTTPS in by accident - most likely an HTTP client
+# crate added with default features.
+#
+# tokio used to be banned here under ADR-004 ("no async runtime of ours"). ADR-015 supersedes
+# that: both binaries now run axum, so tokio is a deliberate direct dependency.
+deny = [
+	{ crate = "openssl" },
+	{ crate = "openssl-sys" },
+	{ crate = "native-tls" },
+	{ crate = "rustls" },
+	{ crate = "ring" },
+	{ crate = "aws-lc-rs" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

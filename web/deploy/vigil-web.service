@@ -14,9 +14,30 @@ ExecStart=/usr/bin/node build
 Restart=always
 RestartSec=5
 
+# Sandboxing. docs/SECURITY.md §3.3. vigil-web reads Postgres and vigil-core's
+# loopback stream, serves HTTP, and writes nothing.
 NoNewPrivileges=true
-ProtectSystem=full
+# "strict", not "full": the build directory is read at startup and never written.
+ProtectSystem=strict
 ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+LockPersonality=true
+# Runs as an unprivileged user and binds a port above 1024, so it needs none.
+CapabilityBoundingSet=
+
+# MemoryDenyWriteExecute: NOT set, because V8 maps its JIT output writable and
+#   then executable. With it, node refuses to start at all.
 
 [Install]
 WantedBy=multi-user.target

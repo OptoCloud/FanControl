@@ -2,15 +2,15 @@
 //! Kept free of timing, signals and sockets so every failure path is unit-testable
 //! against a fake sysfs; main.rs owns the loop around it.
 
+use crate::conditions::ConditionLog;
 use crate::config::Config;
 use crate::curve::{CurveEngine, FanCurve};
 use crate::fans::{FanChannel, FanController, FanStatus, PwmMode, StallDetector};
-use crate::log;
-use crate::log::ConditionTracker;
 use crate::sensors::{self, DEFAULT_WHITELIST, HwmonResolver, ResolvedSensor, SensorReading};
 use crate::sysfs::SysFs;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tracing::{debug, error, info, warn};
 
 /// Polls a fan must read 0 RPM for before it counts as stalled (10s at the default 2s poll).
 const STALL_POLLS: u32 = 5;
@@ -24,7 +24,7 @@ pub struct ControlLoop {
     disk_by_path_dir: String,
     engine: CurveEngine,
     stall_detector: StallDetector,
-    conditions: ConditionTracker,
+    conditions: ConditionLog,
     sensors: Option<(Instant, Vec<ResolvedSensor>)>,
 }
 
@@ -78,7 +78,7 @@ impl ControlLoop {
             disk_by_path_dir: config.disk_by_path_dir.clone(),
             engine: CurveEngine::default(),
             stall_detector: StallDetector::new(STALL_POLLS),
-            conditions: ConditionTracker::default(),
+            conditions: ConditionLog::default(),
             sensors: None,
         })
     }
@@ -125,14 +125,13 @@ impl ControlLoop {
         match result {
             Ok(()) => {
                 if self.conditions.changed(&condition, false) {
-                    log!(Info, "Fan channel '{}' is under control again.", channel.id);
+                    info!("Fan channel '{}' is under control again.", channel.id);
                 }
                 true
             }
             Err(error) => {
                 if self.conditions.changed(&condition, true) {
-                    log!(
-                        Error,
+                    error!(
                         "Failed to drive fan channel '{}' ({error}); handing it back to automatic control and retrying every poll.",
                         channel.id
                     );
@@ -141,7 +140,7 @@ impl ControlLoop {
                 // It may be sitting on manual at a stale duty. Best effort: if this write
                 // fails too there is nothing left to try until the next poll.
                 if let Err(release_error) = self.controller.release_to_auto(channel) {
-                    log!(Debug, "Releasing fan channel '{}' after a failed poll also failed: {release_error}", channel.id);
+                    debug!("Releasing fan channel '{}' after a failed poll also failed: {release_error}", channel.id);
                 }
                 false
             }
@@ -159,22 +158,22 @@ impl ControlLoop {
         match &self.sensors {
             None => {
                 for spec in DEFAULT_WHITELIST.iter().filter(|spec| !spec.all_instances && !current.iter().any(|s| s.id == spec.id)) {
-                    log!(Warning, "Sensor '{}' (chip {}) could not be resolved on this host.", spec.id, spec.chip_name);
+                    warn!("Sensor '{}' (chip {}) could not be resolved on this host.", spec.id, spec.chip_name);
                 }
             }
             Some((_, previous)) => {
                 for sensor in &current {
                     match previous.iter().find(|p| p.id == sensor.id) {
-                        None => log!(Info, "Sensor '{}' appeared at {}.", sensor.id, sensor.temp_input_path),
+                        None => info!("Sensor '{}' appeared at {}.", sensor.id, sensor.temp_input_path),
                         Some(p) if p.temp_input_path != sensor.temp_input_path => {
-                            log!(Info, "Sensor '{}' moved to {}.", sensor.id, sensor.temp_input_path)
+                            info!("Sensor '{}' moved to {}.", sensor.id, sensor.temp_input_path)
                         }
                         Some(_) => {}
                     }
                 }
 
                 for sensor in previous.iter().filter(|p| !current.iter().any(|c| c.id == p.id)) {
-                    log!(Warning, "Sensor '{}' disappeared (was at {}).", sensor.id, sensor.temp_input_path);
+                    warn!("Sensor '{}' disappeared (was at {}).", sensor.id, sensor.temp_input_path);
                 }
             }
         }
@@ -189,27 +188,21 @@ impl ControlLoop {
                 status.mode != Some(PwmMode::Manual) && !self.conditions.is_active(&format!("apply-failed:{}", status.id));
             if self.conditions.changed(&format!("unexpected-mode:{}", status.id), unexpected_mode) {
                 if unexpected_mode {
-                    log!(
-                        Warning,
+                    warn!(
                         "Fan channel '{}' read back pwm_enable={} right after being re-asserted to Manual: a Super I/O watchdog or hardware quirk may be reverting it.",
                         status.id,
                         status.mode.map_or_else(|| "unreadable".to_owned(), |mode| format!("{mode:?}"))
                     );
                 } else {
-                    log!(Info, "Fan channel '{}' reads back as Manual again.", status.id);
+                    info!("Fan channel '{}' reads back as Manual again.", status.id);
                 }
             }
 
             if self.conditions.changed(&format!("stalled:{}", status.id), status.stalled) {
                 if status.stalled {
-                    log!(
-                        Warning,
-                        "Fan channel '{}' reads 0 RPM at {}% duty: fan dead, jammed or unplugged?",
-                        status.id,
-                        status.duty_percent
-                    );
+                    warn!("Fan channel '{}' reads 0 RPM at {}% duty: fan dead, jammed or unplugged?", status.id, status.duty_percent);
                 } else {
-                    log!(Info, "Fan channel '{}' is spinning again ({} RPM).", status.id, status.rpm.unwrap_or_default());
+                    info!("Fan channel '{}' is spinning again ({} RPM).", status.id, status.rpm.unwrap_or_default());
                 }
             }
         }

@@ -57,7 +57,12 @@ describe('timeTicks', () => {
 });
 
 describe('nearestIndex', () => {
-	const points: [number, number][] = [[100, 1], [200, 2], [300, 3], [1000, 4]];
+	const points: [number, number][] = [
+		[100, 1],
+		[200, 2],
+		[300, 3],
+		[1000, 4]
+	];
 
 	it('finds the closest point, clamping outside the data', () => {
 		expect(nearestIndex(points, 0)).toBe(0);
@@ -78,12 +83,17 @@ describe('labels', () => {
 		expect(humanize('intake-gpu-lsi')).toBe('Intake gpu lsi');
 	});
 
+	// Wording comes from Intl.RelativeTimeFormat's narrow style, so these assert the unit
+	// vigil picks rather than the exact phrasing, which is the platform's to change.
 	it('describes ages in the largest sensible unit', () => {
 		const now = Date.UTC(2026, 0, 2);
+		const ago = (ms: number) => relativeTime(new Date(now - ms).toISOString(), now);
 
-		expect(relativeTime(new Date(now - 5_000).toISOString(), now)).toBe('5s ago');
-		expect(relativeTime(new Date(now - 15 * 60_000).toISOString(), now)).toBe('15 min ago');
-		expect(relativeTime(new Date(now - 3 * 3_600_000).toISOString(), now)).toBe('3 h ago');
-		expect(relativeTime(new Date(now + 60_000).toISOString(), now)).toBe('0s ago');
+		expect(ago(5_000)).toBe('5s ago');
+		expect(ago(15 * 60_000)).toBe('15m ago');
+		expect(ago(3 * 3_600_000)).toBe('3h ago');
+		expect(ago(2 * 86_400_000)).toBe('2d ago');
+		// A clock slightly ahead of ours reads as "now", never as a time in the future.
+		expect(ago(-60_000)).toBe('0s ago');
 	});
 });

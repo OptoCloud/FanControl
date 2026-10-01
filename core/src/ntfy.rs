@@ -5,6 +5,7 @@
 
 use crate::alerts::NewEvent;
 use std::process::{Command, Stdio};
+use tracing::warn;
 use vigil_protocol::Severity;
 
 pub fn send(url: &str, event: &NewEvent) {
@@ -33,8 +34,8 @@ pub fn send(url: &str, event: &NewEvent) {
         let result = Command::new("curl").args(&args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output();
         match result {
             Ok(output) if output.status.success() => {}
-            Ok(output) => crate::log!(Warning, "could not send a notification: {}", String::from_utf8_lossy(&output.stderr).trim()),
-            Err(error) => crate::log!(Warning, "could not send a notification (is curl installed?): {error}"),
+            Ok(output) => warn!("could not send a notification: {}", String::from_utf8_lossy(&output.stderr).trim()),
+            Err(error) => warn!("could not send a notification (is curl installed?): {error}"),
         }
     });
 }

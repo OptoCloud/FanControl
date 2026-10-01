@@ -1,4 +1,8 @@
 //! Piecewise-linear fan curves with asymmetric hysteresis (instant rise, delayed fall).
+//!
+//! Over the 400-line ceiling (STYLE.md §2.1) and staying whole: only the first 180 lines are
+//! code, and it is one job — turning temperatures into a duty. The rest is the test table,
+//! and these are the cases that decide how hard the fans work, so they stay next to the rule.
 
 use crate::config::{CurveConfig, ZoneConfig, is_wildcard};
 use crate::sensors::SensorReading;

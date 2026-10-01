@@ -145,7 +145,9 @@
 							</td>
 							<td>{@render temperature(bay.sensor?.celsiusOrNull ?? null)}</td>
 							<td><Sparkline points={bay.trend} /></td>
-							<td>{#if bay.wwn}<StatusBadge level={s.level} label={s.label} />{/if}</td>
+							<td
+								>{#if bay.wwn}<StatusBadge level={s.level} label={s.label} />{/if}</td
+							>
 						</tr>
 					{:else}
 						<tr><td colspan="5" class="muted">No bays reported yet: that needs a daemon that reports each drive's port.</td></tr>

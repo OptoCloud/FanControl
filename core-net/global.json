@@ -1,0 +1,19 @@
+{
+  "comment": [
+    "Pinned to .NET 10, the current LTS. The machine also has an 11.0 RC SDK installed and",
+    "would otherwise pick it: building a production service with a release-candidate compiler",
+    "is not reproducible, and net10.0 is what the target host will run.",
+    "rollForward latestFeature allows 10.0.x patch and feature updates, nothing above 10.",
+    "",
+    "The test runner opt-in is required on the .NET 10 SDK: xunit.v3 runs on",
+    "Microsoft.Testing.Platform, and without this `dotnet test` still routes to the old VSTest",
+    "host and refuses outright."
+  ],
+  "sdk": {
+    "version": "10.0.400",
+    "rollForward": "latestFeature"
+  },
+  "test": {
+    "runner": "Microsoft.Testing.Platform"
+  }
+}

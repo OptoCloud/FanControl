@@ -113,7 +113,10 @@ export async function queryHistory(sql: Sql, range: RangeKey, upsName: string | 
 		}
 	}
 
-	const group = (prefix: string) => Object.entries(temperatures).filter(([id]) => id.startsWith(prefix)).map(([, points]) => points);
+	const group = (prefix: string) =>
+		Object.entries(temperatures)
+			.filter(([id]) => id.startsWith(prefix))
+			.map(([, points]) => points);
 	temperatures['drives:max'] = hottestOf(group('drive:'));
 	temperatures['memory:max'] = hottestOf(group('dimm:'));
 

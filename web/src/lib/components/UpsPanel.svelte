@@ -42,7 +42,14 @@
 					<th scope="row">Battery</th>
 					<td class="bar">
 						{#if reading.batteryCharge !== null}
-							<div class="meter" role="meter" aria-label="Battery charge" aria-valuemin="0" aria-valuemax="100" aria-valuenow={reading.batteryCharge}>
+							<div
+								class="meter"
+								role="meter"
+								aria-label="Battery charge"
+								aria-valuemin="0"
+								aria-valuemax="100"
+								aria-valuenow={reading.batteryCharge}
+							>
 								<div class="fill" style:width="{reading.batteryCharge}%"></div>
 							</div>
 						{/if}
@@ -65,7 +72,9 @@
 				</tr>
 				<tr>
 					<th scope="row">Runtime</th>
-					<td colspan="2" class="numeric value">{reading.batteryRuntimeSeconds === null ? 'n/a' : formatRuntime(reading.batteryRuntimeSeconds)}</td>
+					<td colspan="2" class="numeric value"
+						>{reading.batteryRuntimeSeconds === null ? 'n/a' : formatRuntime(reading.batteryRuntimeSeconds)}</td
+					>
 				</tr>
 				<tr>
 					<th scope="row">Mains in</th>

@@ -31,10 +31,21 @@ describe('rangeSpec', () => {
 
 describe('hottestOf', () => {
 	it('takes the maximum per bucket across series with different coverage', () => {
-		const a: [number, number][] = [[1000, 30], [2000, 35]];
-		const b: [number, number][] = [[2000, 33], [3000, 40], [1000, 31]];
+		const a: [number, number][] = [
+			[1000, 30],
+			[2000, 35]
+		];
+		const b: [number, number][] = [
+			[2000, 33],
+			[3000, 40],
+			[1000, 31]
+		];
 
-		expect(hottestOf([a, b])).toEqual([[1000, 31], [2000, 35], [3000, 40]]);
+		expect(hottestOf([a, b])).toEqual([
+			[1000, 31],
+			[2000, 35],
+			[3000, 40]
+		]);
 	});
 
 	it('is empty for an empty group', () => {

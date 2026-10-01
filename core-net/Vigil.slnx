@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Vigil.Core.Tests/Vigil.Core.Tests.csproj" />
+  <Project Path="Vigil.Core/Vigil.Core.csproj" />
+</Solution>

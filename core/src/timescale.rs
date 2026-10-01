@@ -19,12 +19,17 @@
 
 use postgres::Client;
 use std::time::Duration;
+use tracing::info;
+use vigil_protocol::rfc3339_from_millis;
 
 /// Minute rollups are kept this long; hourly ones forever.
 const MINUTE_RETENTION: &str = "365 days";
 /// Raw chunks older than this are compressed (they are only read by the 1h and 6h charts).
 const COMPRESS_AFTER: &str = "7 days";
 
+/// One raw table and everything built over it. The SQL lives in core/sql/aggregates/ and is
+/// embedded at compile time (STYLE.md §3.2): a continuous aggregate's definition is worth
+/// reading as SQL, and worth being able to run by hand against a real database.
 struct Series {
     raw: &'static str,
     key: &'static str,
@@ -42,68 +47,40 @@ const SERIES: [Series; 3] = [
     Series {
         raw: "sensor_samples",
         key: "sensor_id",
-        minute: "select time_bucket('1 minute', ts) as bucket, sensor_id,
-                    avg(celsius) as avg_celsius, min(celsius) as min_celsius, max(celsius) as max_celsius, count(*) as samples
-                 from sensor_samples group by 1, 2",
-        hour: "select time_bucket('1 hour', bucket) as bucket, sensor_id,
-                   sum(avg_celsius * samples) / sum(samples) as avg_celsius, min(min_celsius) as min_celsius,
-                   max(max_celsius) as max_celsius, sum(samples) as samples
-               from sensor_1m group by 1, 2",
-        backfill: "insert into sensor_samples (ts, sensor_id, celsius)
-                   select bucket, sensor_id, avg_celsius from sensor_minutes
-                   where bucket < coalesce((select min(ts) from sensor_samples), 'infinity')
-                   on conflict do nothing",
+        minute: include_str!("../sql/aggregates/sensor_1m.sql"),
+        hour: include_str!("../sql/aggregates/sensor_1h.sql"),
+        backfill: include_str!("../sql/aggregates/sensor_backfill.sql"),
         legacy: "sensor_minutes",
     },
     Series {
         raw: "fan_samples",
         key: "fan_id",
-        minute: "select time_bucket('1 minute', ts) as bucket, fan_id,
-                    avg(duty_percent) as avg_duty, avg(rpm) as avg_rpm, min(rpm) as min_rpm, max(rpm) as max_rpm, count(*) as samples
-                 from fan_samples group by 1, 2",
-        hour: "select time_bucket('1 hour', bucket) as bucket, fan_id,
-                   sum(avg_duty * samples) / sum(samples) as avg_duty,
-                   sum(avg_rpm * samples) / nullif(sum(case when avg_rpm is not null then samples else 0 end), 0) as avg_rpm,
-                   min(min_rpm) as min_rpm, max(max_rpm) as max_rpm, sum(samples) as samples
-               from fan_1m group by 1, 2",
-        backfill: "insert into fan_samples (ts, fan_id, duty_percent, rpm)
-                   select bucket, fan_id, round(avg_duty)::int2, round(avg_rpm)::int4 from fan_minutes
-                   where bucket < coalesce((select min(ts) from fan_samples), 'infinity')
-                   on conflict do nothing",
+        minute: include_str!("../sql/aggregates/fan_1m.sql"),
+        hour: include_str!("../sql/aggregates/fan_1h.sql"),
+        backfill: include_str!("../sql/aggregates/fan_backfill.sql"),
         legacy: "fan_minutes",
     },
     Series {
         raw: "ups_samples",
         key: "ups",
-        minute: "select time_bucket('1 minute', ts) as bucket, ups,
-                    avg(charge) as avg_charge, min(charge) as min_charge,
-                    avg(runtime_seconds) as avg_runtime_seconds, min(runtime_seconds) as min_runtime_seconds,
-                    avg(load) as avg_load, max(load) as max_load, avg(real_power) as avg_real_power,
-                    avg(input_voltage) as avg_input_voltage, min(input_voltage) as min_input_voltage,
-                    max(input_voltage) as max_input_voltage, avg(output_voltage) as avg_output_voltage,
-                    sum(case when ' ' || status || ' ' like '% OB %' then 1 else 0 end) as on_battery_samples,
-                    count(*) as samples
-                 from ups_samples group by 1, 2",
-        hour: "select time_bucket('1 hour', bucket) as bucket, ups,
-                   sum(avg_charge * samples) / sum(samples) as avg_charge, min(min_charge) as min_charge,
-                   sum(avg_runtime_seconds * samples) / sum(samples) as avg_runtime_seconds,
-                   min(min_runtime_seconds) as min_runtime_seconds,
-                   sum(avg_load * samples) / sum(samples) as avg_load, max(max_load) as max_load,
-                   sum(avg_real_power * samples) / sum(samples) as avg_real_power,
-                   sum(avg_input_voltage * samples) / sum(samples) as avg_input_voltage,
-                   min(min_input_voltage) as min_input_voltage, max(max_input_voltage) as max_input_voltage,
-                   sum(avg_output_voltage * samples) / sum(samples) as avg_output_voltage,
-                   sum(on_battery_samples) as on_battery_samples, sum(samples) as samples
-               from ups_1m group by 1, 2",
-        backfill: "insert into ups_samples (ts, ups, status, charge, runtime_seconds, load, real_power, input_voltage, output_voltage)
-                   select bucket, ups, case when on_battery_samples * 2 > samples then 'OB' else 'OL' end,
-                       avg_charge, round(avg_runtime_seconds)::int4, avg_load, avg_real_power, avg_input_voltage, avg_output_voltage
-                   from ups_minutes
-                   where bucket < coalesce((select min(ts) from ups_samples), 'infinity')
-                   on conflict do nothing",
+        minute: include_str!("../sql/aggregates/ups_1m.sql"),
+        hour: include_str!("../sql/aggregates/ups_1h.sql"),
+        backfill: include_str!("../sql/aggregates/ups_backfill.sql"),
         legacy: "ups_minutes",
     },
 ];
+
+/// The one-off fill of a continuous aggregate, from `oldest_millis` to now.
+///
+/// Kept separate so the only statement in this module that interpolates a *value* is
+/// unit-testable: the test pins both the shape and the fact that the timestamp is made of
+/// nothing a SQL parser would treat as syntax.
+fn refresh_statement(name: &str, oldest_millis: i64) -> String {
+    let oldest = rfc3339_from_millis(oldest_millis);
+    // sql-literal-ok: `name` is name_of(), built from the compile-time SERIES table, and
+    // `oldest` is formatted by us from an i64 - neither can carry SQL.
+    format!("call refresh_continuous_aggregate('{name}', '{oldest}'::timestamptz, null)")
+}
 
 /// A map_err adapter that says what was being done.
 fn failed(doing: impl Into<String>) -> impl FnOnce(postgres::Error) -> String {
@@ -164,13 +141,7 @@ pub fn setup(client: &mut Client, raw_retention: Duration) -> Result<(), String>
             client
                 .batch_execute(&format!("alter table {0} rename to legacy_{0}", series.legacy))
                 .map_err(failed(&format!("renaming {}", series.legacy)))?;
-            crate::log!(
-                Info,
-                "carried {copied} rows of {} over into {}; the old table is now legacy_{}",
-                series.legacy,
-                series.raw,
-                series.legacy
-            );
+            info!("carried {copied} rows of {} over into {}; the old table is now legacy_{}", series.legacy, series.raw, series.legacy);
             fresh_aggregates = true;
         }
     }
@@ -186,7 +157,7 @@ pub fn setup(client: &mut Client, raw_retention: Duration) -> Result<(), String>
         .map_err(failed("reading vigil_state"))?
         .is_some();
     if fresh_aggregates || !filled {
-        crate::log!(Info, "filling the rollups over all history (once; this can take a while)");
+        info!("filling the rollups over all history (once; this can take a while)");
         let started = std::time::Instant::now();
         for level in ["1m", "1h"] {
             for series in &SERIES {
@@ -197,14 +168,21 @@ pub fn setup(client: &mut Client, raw_retention: Duration) -> Result<(), String>
                 } else {
                     (name_of(series, "1m"), "time_bucket('1 hour', min(bucket))")
                 };
-                let oldest: Option<String> = client
-                    .query_one(&format!("select {oldest_bucket}::text from {source}"), &[])
+                // Read back as epoch MILLISECONDS, not as text. A timestamp read as text and
+                // then pasted into the next statement is a database-controlled value inside
+                // SQL; an integer run through our own formatter provably contains nothing but
+                // digits, '-', ':', '.' and 'Z'. CALL cannot run inside a transaction block,
+                // which is exactly what the extended protocol would wrap a bound parameter
+                // in, so this one statement has to be assembled as text. SECURITY.md §6.
+                let oldest: Option<i64> = client
+                    .query_one(&format!("select (extract(epoch from {oldest_bucket}) * 1000)::int8 from {source}"), &[])
                     .map_err(failed(&format!("finding the oldest row of {source}")))?
                     .get(0);
-                let Some(oldest) = oldest else { continue };
-                client
-                    .batch_execute(&format!("call refresh_continuous_aggregate('{name}', '{oldest}'::timestamptz, null)"))
-                    .map_err(failed(&format!("filling {name}")))?;
+                // Negative would mean a pre-1970 sample, which the formatter clamps to the
+                // epoch - i.e. EARLIER than the oldest row, the one thing this window must
+                // never be (see the note above about retention deleting rollups).
+                let Some(oldest) = oldest.filter(|&millis| millis >= 0) else { continue };
+                client.batch_execute(&refresh_statement(&name, oldest)).map_err(failed(&format!("filling {name}")))?;
             }
         }
         client
@@ -214,12 +192,17 @@ pub fn setup(client: &mut Client, raw_retention: Duration) -> Result<(), String>
                 &[],
             )
             .map_err(failed("recording the fill"))?;
-        crate::log!(Info, "rollups filled in {:.0}s", started.elapsed().as_secs_f64());
+        info!("rollups filled in {:.0}s", started.elapsed().as_secs_f64());
     }
 
     let raw_days = (raw_retention.as_secs() / 86_400).max(1);
     for series in &SERIES {
         let (minute, hour) = (name_of(series, "1m"), name_of(series, "1h"));
+        // sql-literal-ok: every interpolation here is an identifier from the compile-time
+        // SERIES table (via name_of()) or an integer - `raw_days` is a u64 computed from the
+        // configured retention, and MINUTE_RETENTION/COMPRESS_AFTER are &'static str consts.
+        // TimescaleDB's policy functions take their hypertable by name, so there is nothing
+        // bindable here even in principle.
         let policies = format!(
             "
             select add_continuous_aggregate_policy('{minute}', start_offset => interval '2 hours',
@@ -244,6 +227,7 @@ pub fn setup(client: &mut Client, raw_retention: Duration) -> Result<(), String>
         if !compressed {
             client
                 .batch_execute(&format!(
+                    // sql-literal-ok: `key` is a &'static str from the SERIES table above.
                     "alter table {raw} set (timescaledb.compress, timescaledb.compress_segmentby = '{key}', timescaledb.compress_orderby = 'ts')",
                     raw = series.raw,
                     key = series.key
@@ -252,6 +236,9 @@ pub fn setup(client: &mut Client, raw_retention: Duration) -> Result<(), String>
         }
         client
             .execute(
+                // sql-literal-ok: the hypertable name is a &'static str from SERIES and
+                // COMPRESS_AFTER is a &'static str const; add_compression_policy takes its
+                // table by name, so neither is bindable.
                 &format!(
                     "select add_compression_policy('{}', compress_after => interval '{COMPRESS_AFTER}', if_not_exists => true)",
                     series.raw
@@ -268,6 +255,21 @@ pub fn setup(client: &mut Client, raw_retention: Duration) -> Result<(), String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_refresh_window_starts_at_a_timestamp_that_cannot_carry_sql() {
+        let statement = refresh_statement("sensor_1m", 1_790_023_167_482);
+
+        assert_eq!(statement, "call refresh_continuous_aggregate('sensor_1m', '2026-09-21T20:39:27.482Z'::timestamptz, null)");
+
+        // Whatever the instant, the interpolated literal is only ever these characters, so
+        // there is nothing in it a SQL parser could read as syntax.
+        for millis in [0, 1, 999, 1_790_023_167_482, i64::MAX / 2] {
+            let timestamp = refresh_statement("x", millis);
+            let literal = timestamp.split('\'').nth(3).expect("the timestamp is the second quoted literal");
+            assert!(literal.chars().all(|c| c.is_ascii_digit() || matches!(c, '-' | ':' | '.' | 'Z' | 'T')), "{millis}: {literal}");
+        }
+    }
 
     #[test]
     fn aggregate_names_follow_the_raw_table() {

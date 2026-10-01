@@ -1,0 +1,7 @@
+# Generated or vendored: not ours to format.
+.svelte-kit/
+build/
+node_modules/
+package-lock.json
+# Vendored by the shadcn-svelte CLI (Phase 5): upgraded through the CLI, never hand-edited.
+src/lib/components/ui/

@@ -35,8 +35,10 @@ temperatures. This host also carries:
 None of that feeds the BIOS curve. This daemon reads all of it and drives the
 board's PWM headers directly.
 
-It is a single static Rust binary of about 1 MB with no runtime. (It started
-life as a .NET daemon; that implementation is in the git history.)
+It is a single static Rust binary of about 1.5 MB. The control loop and the
+fan-safety machinery are plain threads; only the status API is async, served by
+axum on a small tokio runtime of its own ([ADR-015](docs/DECISIONS.md)). (It
+started life as a .NET daemon; that implementation is in the git history.)
 
 ## How it works
 
@@ -181,7 +183,34 @@ A Cargo workspace (`daemon/`, `core/`, `protocol/`) plus the SvelteKit app.
 - `dev/`: stand-ins for `vigild` and upsd, and a Postgres, for developing
   without the hardware.
 
+## Conventions
+
+Four short documents, all specific to this codebase. Every rule in them names
+what enforces it, because a rule nothing checks does not survive.
+
+- [`docs/STYLE.md`](docs/STYLE.md): shared code, module boundaries, protocol
+  bodies, naming, comments, errors, tests, and the per-language sections.
+- [`docs/SECURITY.md`](docs/SECURITY.md): trust boundaries, privilege,
+  untrusted input, subprocesses, SQL, secrets, and a pre-merge checklist.
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): the module map, the
+  dependency rule, and the invariants that are design changes, not refactors.
+- [`docs/DECISIONS.md`](docs/DECISIONS.md): why the non-obvious choices are
+  what they are. Read it before "simplifying" one.
+
+[`docs/CLEANUP.md`](docs/CLEANUP.md) is the live work plan, and `CLAUDE.md` is
+the short version of all of it.
+
 ## Build and test
+
+`scripts/check.sh` runs every check there is: formatting, clippy, the Rust
+tests, the wire contract, `cargo-deny`, the web lint, type-check and tests,
+`npm audit`, and the project rules a grep can enforce. CI runs that same
+script and nothing else.
+
+```bash
+./scripts/check.sh          # everything, before every commit
+./scripts/check.sh --rust   # or --web, or --rules
+```
 
 Developed and unit-tested on Windows, runs only on Linux. No cross toolchain
 is needed: the musl target ships its own C runtime and links with Rust's
@@ -242,6 +271,35 @@ systemctl daemon-reload
 systemctl enable --now vigild.service
 journalctl -u vigild -f
 ```
+
+### Secrets and database roles
+
+`vigil-core` and `vigil-web` each read a `DATABASE_URL` containing a password, so both
+environment files are secrets. They live outside the repo and are owned by root:
+
+```bash
+install -o root -g vigil -m 0640 core/deploy/vigil-core.env /etc/vigil-core.env
+install -o root -g vigil -m 0640 web/deploy/vigil-web.env   /etc/vigil-web.env
+```
+
+The two use **different roles**. `vigil-core` owns the schema and writes every row;
+`vigil-web` reads and must never be able to write, which is the role's job to enforce and not
+a comment's. Once, as a superuser on the Postgres host:
+
+```sql
+create role vigil_web login password 'choose-one';
+grant connect on database vigil to vigil_web;
+grant usage on schema public to vigil_web;
+grant select on all tables in schema public to vigil_web;
+-- vigil-core creates tables and continuous aggregates as it starts, so new ones have to
+-- inherit the grant; without this line a new rollup is invisible to the dashboard.
+alter default privileges in schema public grant select on tables to vigil_web;
+```
+
+`vigil-core` also refuses to start if `CORE_HOST` is anything but loopback, unless
+`CORE_ALLOW_NON_LOOPBACK=1` is set alongside it. That is deliberate: actions are meant to
+arrive on its API, so only `vigil-web` beside it may reach it. See
+[`docs/SECURITY.md`](docs/SECURITY.md).
 
 `channels` and `curves` in `vigild.toml` are specific to one board and its
 wiring. Leave both empty to run monitor-only, which never writes to any `pwmN`
@@ -338,8 +396,8 @@ Known accepted quirks:
 ## vigil-core
 
 `vigil-core` (`core/`) is a static Rust binary run in an unprivileged LXC,
-beside `vigil-web`. It is plain threads and channels like `vigild`, with one
-thread that owns all state.
+beside `vigil-web`. One thread owns all state, as in `vigild`; the live stream
+is served by axum on its own small tokio runtime.
 
 - It keeps the one connection to `vigild`'s socket (the socket's directory is
   bind-mounted in) and one to NUT's `upsd` over TCP, polling `LIST VAR` every
@@ -375,6 +433,13 @@ event log straight from Postgres. It writes nothing. Each chart range reads the
 coarsest level that still has its resolution: raw samples up to 6 hours, minute
 rollups up to 7 days, hourly ones for 30 days and a year. Configured by `CORE_URL`
 and `DATABASE_URL`; `web/deploy/package.sh` builds the deployable tarball.
+
+**It has no authentication and binds every interface, deliberately: the LAN is
+treated as trusted** (see [ADR-008](docs/DECISIONS.md)). Anything on the network
+can read the host's state and the event log. Authentication is a planned
+feature, not an oversight, and the decision is void the moment `vigil-web`
+gains a route that writes anything. `vigil-core` itself stays on loopback
+regardless.
 
 ## Development
 

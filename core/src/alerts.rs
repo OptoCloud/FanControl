@@ -202,13 +202,13 @@ pub fn ups_conditions(ups: &UpsState, unreadable_for: Duration) -> Conditions {
 /// Debounces conditions into raise/clear events. A condition has to hold for `threshold`
 /// consecutive updates before it is raised, and be absent for as many before it clears,
 /// so a single odd poll (nvidia-smi timing out once) never produces a notification.
-pub struct ConditionTracker {
+pub struct ConditionDebouncer {
     threshold: u32,
     pending: BTreeMap<String, u32>,
     raised: BTreeMap<String, (Condition, u32)>,
 }
 
-impl ConditionTracker {
+impl ConditionDebouncer {
     pub fn new(threshold: u32) -> Self {
         Self { threshold: threshold.max(1), pending: BTreeMap::new(), raised: BTreeMap::new() }
     }
@@ -376,7 +376,7 @@ mod tests {
 
     #[test]
     fn the_tracker_raises_after_the_threshold_and_clears_after_as_many_absences() {
-        let mut tracker = ConditionTracker::new(3);
+        let mut tracker = ConditionDebouncer::new(3);
         let mut present = Conditions::new();
         present.insert("fan-stalled:x".to_owned(), condition(Severity::Critical, "stalled".to_owned(), "spinning".to_owned()));
         let absent = Conditions::new();
@@ -394,7 +394,7 @@ mod tests {
 
     #[test]
     fn a_blip_shorter_than_the_threshold_never_raises() {
-        let mut tracker = ConditionTracker::new(3);
+        let mut tracker = ConditionDebouncer::new(3);
         let mut present = Conditions::new();
         present.insert("gpu".to_owned(), condition(Severity::Warning, "w".to_owned(), "c".to_owned()));
 
@@ -507,7 +507,7 @@ mod tests {
 
     #[test]
     fn with_a_threshold_of_one_power_events_raise_and_clear_on_the_first_poll() {
-        let mut tracker = ConditionTracker::new(1);
+        let mut tracker = ConditionDebouncer::new(1);
         assert_eq!(tracker.update(&ups_conditions(&ups(&["OB"], None, None), Duration::ZERO))[0].severity, Severity::Warning);
         assert_eq!(
             tracker.update(&ups_conditions(&ups(&["OL"], None, None), Duration::ZERO))[0].message,

@@ -1,5 +1,9 @@
 // Incremental Server-Sent Events parser. Network chunks split anywhere (mid-line, even
 // mid-character once decoded upstream), so this buffers and only acts on complete lines.
+//
+// Kept rather than replaced by the platform's EventSource: in Node 26 that is still behind
+// --experimental-eventsource, and a long-lived production stream should not depend on an
+// experimental flag. Reconsider when it ships unflagged. See ADR-015.
 
 export interface SseEvent {
 	event: string;

@@ -17,9 +17,12 @@ export function summarizeUps(ups: UpsState): UpsSummary {
 	const runtime = reading.batteryRuntimeSeconds === null ? '' : `, about ${formatRuntime(reading.batteryRuntimeSeconds)} left`;
 	const charge = reading.batteryCharge === null ? '' : ` at ${Math.round(reading.batteryCharge)}%`;
 
-	if (flags.has('FSD')) return { level: 'critical', label: 'Forced shutdown', banner: 'The UPS is in forced shutdown: the load is about to lose power.' };
-	if (flags.has('LB')) return { level: 'critical', label: 'Battery low', banner: `UPS battery low${charge}. orion shuts itself down on this.` };
-	if (flags.has('OB')) return { level: 'warning', label: 'On battery', banner: `Mains power lost: running on the UPS battery${charge}${runtime}.` };
+	if (flags.has('FSD'))
+		return { level: 'critical', label: 'Forced shutdown', banner: 'The UPS is in forced shutdown: the load is about to lose power.' };
+	if (flags.has('LB'))
+		return { level: 'critical', label: 'Battery low', banner: `UPS battery low${charge}. orion shuts itself down on this.` };
+	if (flags.has('OB'))
+		return { level: 'warning', label: 'On battery', banner: `Mains power lost: running on the UPS battery${charge}${runtime}.` };
 	if (flags.has('OFF')) return { level: 'warning', label: 'Off' };
 	if (flags.has('BYPASS')) return { level: 'warning', label: 'On bypass' };
 	if (flags.has('OVER')) return { level: 'warning', label: 'Overloaded' };

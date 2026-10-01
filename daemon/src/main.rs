@@ -4,17 +4,19 @@
 //! algorithm itself needs from one poll to the next (hysteresis anchors, stall counters).
 //! History, trends and alerting belong to whatever consumes the status API.
 
+// A panic in a test IS the failure report; the lint is aimed at production paths.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 // The daemon only runs on Linux but is developed and unit-tested on Windows, where the
 // socket server and the HBA ioctl are compiled out and their pure helpers look unused.
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
+mod conditions;
 mod config;
 mod control;
 mod curve;
 mod fans;
 mod gpu;
 mod hba;
-mod log;
 mod mpt3;
 mod notify;
 mod process;
@@ -35,13 +37,23 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use sysfs::{LinuxSysFs, SysFs};
+use tracing::{error, info, warn};
+
+/// Overridden by RUST_LOG. Info is the right default: the control loop logs transitions,
+/// not every poll, so this stays quiet on a healthy host.
+const DEFAULT_LOG_FILTER: &str = "info";
 
 const DEFAULT_CONFIG_PATH: &str = "/etc/vigil/vigild.toml";
 
 /// Set by SIGTERM/SIGINT. Everything that waits does so in short slices and checks this.
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
+#[allow(clippy::print_stdout, reason = "--help/--check report to stdout for a human; log lines go to stderr via log!()")]
 fn main() -> ExitCode {
+    // First, before anything can want to log: tracing drops every record silently until a
+    // subscriber is installed.
+    vigil_logging::init(DEFAULT_LOG_FILTER);
+
     let args: Vec<String> = std::env::args().skip(1).collect();
     let check_only = args.iter().any(|arg| arg == "--check");
     let config_path =
@@ -60,12 +72,13 @@ fn main() -> ExitCode {
     match run(config_path, check_only) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            log!(Critical, "{error}");
+            error!("{error}");
             ExitCode::FAILURE
         }
     }
 }
 
+#[allow(clippy::print_stdout, reason = "--help/--check report to stdout for a human; log lines go to stderr via log!()")]
 fn run(config_path: &str, check_only: bool) -> Result<(), String> {
     let config_text = std::fs::read_to_string(config_path).map_err(|e| format!("Cannot read config file {config_path}: {e}"))?;
     let config = Config::parse(&config_text).map_err(|e| format!("Cannot parse config file {config_path}: {e}"))?;
@@ -99,13 +112,13 @@ fn run(config_path: &str, check_only: bool) -> Result<(), String> {
     if config.drive_health.enabled {
         spawn_drive_health_poller(&config, Arc::clone(&sysfs), Arc::clone(&drive_health));
     } else {
-        log!(Info, "Drive health polling disabled via config.");
+        info!("Drive health polling disabled via config.");
     }
 
     let mut gpu = gpu::GpuTemperatureProvider::new(config.gpu.clone());
     let mut hba = hba::HbaTemperatureProvider::new(config.hba.clone());
 
-    log!(Info, "Control loop starting: {} fan channel(s), poll every {:?}.", config.channels.len(), config.poll_interval());
+    info!("Control loop starting: {} fan channel(s), poll every {:?}.", config.channels.len(), config.poll_interval());
     notify::ready();
 
     let mut next_poll = Instant::now();
@@ -131,7 +144,7 @@ fn run(config_path: &str, check_only: bool) -> Result<(), String> {
         sleep_until(next_poll);
     }
 
-    log!(Info, "Shutting down: releasing every fan channel back to automatic control.");
+    info!("Shutting down: releasing every fan channel back to automatic control.");
     notify::stopping();
     drop(guard);
 
@@ -145,7 +158,7 @@ fn run(config_path: &str, check_only: bool) -> Result<(), String> {
 #[cfg(unix)]
 fn start_status_api(config: &Config, hub: &Arc<StatusHub>) -> Result<(), String> {
     if !config.api.enabled {
-        log!(Info, "Status API disabled via config.");
+        info!("Status API disabled via config.");
         return Ok(());
     }
 
@@ -156,13 +169,14 @@ fn start_status_api(config: &Config, hub: &Arc<StatusHub>) -> Result<(), String>
 
 #[cfg(not(unix))]
 fn start_status_api(_config: &Config, _hub: &Arc<StatusHub>) -> Result<(), String> {
-    log!(Warning, "The status API needs unix sockets and is unavailable on this platform.");
+    warn!("The status API needs unix sockets and is unavailable on this platform.");
     Ok(())
 }
 
 /// For --check: what every curve would read on this machine. Resolution only
 /// lists hwmon and the by-path links: no temperature is read and no fan is touched, so a
 /// zone config can be checked against the real drives before it goes live.
+#[allow(clippy::print_stdout, reason = "--help/--check report to stdout for a human; log lines go to stderr via log!()")]
 fn report_curve_inputs(config: &Config, sysfs: &dyn SysFs) {
     let resolved = HwmonResolver::new(sysfs, &config.sysfs_root).with_by_path_dir(&config.disk_by_path_dir).resolve(&DEFAULT_WHITELIST);
     if resolved.is_empty() {
@@ -191,6 +205,7 @@ fn report_curve_inputs(config: &Config, sysfs: &dyn SysFs) {
     }
 }
 
+#[allow(clippy::print_stdout, reason = "--help/--check report to stdout for a human; log lines go to stderr via log!()")]
 fn report_input(name: &str, members: &[Member], present: &[SensorReading]) {
     println!("{name}:");
     for reading in present.iter().filter(|reading| members.iter().any(|member| member.matches(reading))) {
@@ -214,15 +229,15 @@ fn spawn_drive_health_poller(config: &Config, sysfs: Arc<dyn SysFs>, results: Ar
     let sysfs_root = config.sysfs_root.clone();
     let by_path_dir = config.disk_by_path_dir.clone();
     let config = config.drive_health.clone();
-    log!(Info, "Drive health polling every {:?}.", Duration::from_secs_f64(config.poll_interval_secs));
+    info!("Drive health polling every {:?}.", Duration::from_secs_f64(config.poll_interval_secs));
 
     let spawned = std::thread::Builder::new().name("drive-health".to_owned()).spawn(move || {
         while !SHUTDOWN.load(Ordering::Relaxed) {
-            let drives = sensors::HwmonResolver::new(&*sysfs, &sysfs_root).with_by_path_dir(&by_path_dir).resolve(&[sensors::DRIVE_SPEC]);
+            let drives = HwmonResolver::new(&*sysfs, &sysfs_root).with_by_path_dir(&by_path_dir).resolve(&[sensors::DRIVE_SPEC]);
             let health = smart::poll_all(&config, &drives, &status::now_rfc3339());
 
             for drive in health.iter().filter(|drive| drive.passed == Some(false)) {
-                log!(Warning, "Drive {} ({}) FAILED its SMART overall-health self-assessment.", drive.device_name, drive.source_path);
+                warn!("Drive {} ({}) FAILED its SMART overall-health self-assessment.", drive.device_name, drive.source_path);
             }
 
             *results.lock().unwrap_or_else(|e| e.into_inner()) = health;
@@ -231,7 +246,7 @@ fn spawn_drive_health_poller(config: &Config, sysfs: Arc<dyn SysFs>, results: Ar
     });
 
     if let Err(error) = spawned {
-        log!(Error, "Cannot start the drive health poller; drive health will be unavailable: {error}");
+        error!("Cannot start the drive health poller; drive health will be unavailable: {error}");
     }
 }
 
@@ -254,6 +269,7 @@ fn install_signal_handlers() {
     }
 
     // SAFETY: the handler is async-signal-safe (a single atomic store) and lives for the whole program.
+    #[allow(unsafe_code, reason = "audited: signal handler installation, SAFETY above")]
     unsafe {
         libc::signal(libc::SIGTERM, request_shutdown as *const () as libc::sighandler_t);
         libc::signal(libc::SIGINT, request_shutdown as *const () as libc::sighandler_t);

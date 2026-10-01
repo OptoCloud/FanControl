@@ -40,7 +40,25 @@ export function niceTicks(min: number, max: number, target = 5): number[] {
 const MINUTE = 60_000;
 const HOUR = 3_600_000;
 const DAY = 86_400_000;
-const TIME_STEPS = [MINUTE, 5 * MINUTE, 10 * MINUTE, 15 * MINUTE, 30 * MINUTE, HOUR, 2 * HOUR, 3 * HOUR, 6 * HOUR, 12 * HOUR, DAY, 2 * DAY, 5 * DAY, 7 * DAY, 14 * DAY, 30 * DAY, 61 * DAY];
+const TIME_STEPS = [
+	MINUTE,
+	5 * MINUTE,
+	10 * MINUTE,
+	15 * MINUTE,
+	30 * MINUTE,
+	HOUR,
+	2 * HOUR,
+	3 * HOUR,
+	6 * HOUR,
+	12 * HOUR,
+	DAY,
+	2 * DAY,
+	5 * DAY,
+	7 * DAY,
+	14 * DAY,
+	30 * DAY,
+	61 * DAY
+];
 
 /** Tick instants on round local-clock boundaries (whole hours, midnights), at most `maxTicks` of them. */
 export function timeTicks(from: number, to: number, maxTicks: number): number[] {
@@ -63,7 +81,12 @@ export function formatTick(time: number, spanMs: number): string {
 
 export function formatInstant(time: number, spanMs: number): string {
 	const date = new Date(time);
-	const clock = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: spanMs <= HOUR ? '2-digit' : undefined, hour12: false });
+	const clock = date.toLocaleTimeString(undefined, {
+		hour: '2-digit',
+		minute: '2-digit',
+		second: spanMs <= HOUR ? '2-digit' : undefined,
+		hour12: false
+	});
 	return spanMs > DAY / 2 ? `${date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}, ${clock}` : clock;
 }
 
@@ -87,10 +110,21 @@ export function humanize(id: string): string {
 	return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
+// Narrow style, so it fits the stat tiles: "5s ago", "15m ago", "3h ago", "2d ago". Intl
+// handles the wording, the plurals and the locale; picking the unit is the only part that is
+// ours (ADR-015).
+const RELATIVE = new Intl.RelativeTimeFormat(undefined, { style: 'narrow', numeric: 'always' });
+
+const RELATIVE_UNITS: [limit: number, seconds: number, unit: Intl.RelativeTimeFormatUnit][] = [
+	[60, 1, 'second'],
+	[3_600, 60, 'minute'],
+	[86_400, 3_600, 'hour'],
+	[Infinity, 86_400, 'day']
+];
+
 export function relativeTime(iso: string, now: number): string {
+	// Clamped at zero: a drive whose clock is a little ahead should read "0s ago", not "in 3s".
 	const seconds = Math.max(0, Math.round((now - new Date(iso).getTime()) / 1000));
-	if (seconds < 60) return `${seconds}s ago`;
-	if (seconds < 3_600) return `${Math.round(seconds / 60)} min ago`;
-	if (seconds < 86_400) return `${Math.round(seconds / 3_600)} h ago`;
-	return `${Math.round(seconds / 86_400)} d ago`;
+	const [, divisor, unit] = RELATIVE_UNITS.find(([limit]) => seconds < limit) ?? RELATIVE_UNITS[RELATIVE_UNITS.length - 1];
+	return RELATIVE.format(-Math.round(seconds / divisor), unit);
 }

@@ -31,7 +31,11 @@
 	--status-serious: #ec835a;
 	--status-critical: #d03b3b;
 
-	font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+	font-family:
+		system-ui,
+		-apple-system,
+		'Segoe UI',
+		sans-serif;
 }
 
 @media (prefers-color-scheme: dark) {

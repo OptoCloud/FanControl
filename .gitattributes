@@ -1,6 +1,11 @@
 # Linux config, unit and script files must stay LF even when checked out on Windows:
-# modprobe/systemd can choke on a trailing \r in a module name or directive.
+# modprobe/systemd can choke on a trailing \r in a module name or directive, and a shell
+# script with CRLF line endings fails with a confusing "bad interpreter" error.
+#
+# scripts/check.sh checks that every path named here still exists: `dashboard/**` outlived
+# the rename to `web/` by five commits, which is what an unenforced rule looks like.
 deploy/** text eol=lf
+scripts/** text eol=lf
 daemon/scripts/** text eol=lf
-dashboard/deploy/** text eol=lf
-dashboard/scripts/** text eol=lf
+core/deploy/** text eol=lf
+web/deploy/** text eol=lf

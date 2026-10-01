@@ -3,11 +3,12 @@
 //! It runs on its own thread and reconnects forever, reporting each change of reachability.
 
 use crate::config::DaemonTarget;
-use crate::sse::SseParser;
 use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
+use tracing::warn;
 use vigil_protocol::Snapshot;
+use vigil_protocol::sse;
 
 pub enum DaemonEvent {
     Snapshot(Box<Snapshot>),
@@ -79,7 +80,7 @@ fn stream_once(target: &DaemonTarget, on_event: &mut impl FnMut(DaemonEvent)) ->
     }
 
     on_event(DaemonEvent::Connected);
-    let mut parser = SseParser::default();
+    let mut parser = sse::Parser::default();
     let mut handle = |bytes: &[u8]| {
         for event in parser.push(bytes) {
             if event.event != "status" {
@@ -87,7 +88,7 @@ fn stream_once(target: &DaemonTarget, on_event: &mut impl FnMut(DaemonEvent)) ->
             }
             match serde_json::from_str::<Snapshot>(&event.data) {
                 Ok(snapshot) => on_event(DaemonEvent::Snapshot(Box::new(snapshot))),
-                Err(error) => crate::log!(Warning, "discarding a snapshot that could not be parsed: {error}"),
+                Err(error) => warn!("discarding a snapshot that could not be parsed: {error}"),
             }
         }
     };

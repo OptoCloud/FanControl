@@ -27,7 +27,14 @@
 					<th scope="row">{humanize(fan.id)}</th>
 					<td class="duty">
 						<!-- A single ratio against a limit is a meter. The track is a lighter step of the fill's own ramp. -->
-						<div class="meter" role="meter" aria-label="{humanize(fan.id)} duty" aria-valuemin="0" aria-valuemax="100" aria-valuenow={fan.dutyPercent}>
+						<div
+							class="meter"
+							role="meter"
+							aria-label="{humanize(fan.id)} duty"
+							aria-valuemin="0"
+							aria-valuemax="100"
+							aria-valuenow={fan.dutyPercent}
+						>
 							<div class="fill" style:width="{fan.dutyPercent}%"></div>
 						</div>
 						<span class="numeric percent">{fan.dutyPercent}%</span>

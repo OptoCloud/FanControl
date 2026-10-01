@@ -5,3 +5,7 @@
 # Rust build output
 target/
 *.tar.gz
+
+# .NET build output
+[Bb]in/
+[Oo]bj/

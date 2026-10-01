@@ -9,8 +9,6 @@
 	<link rel="icon" href={favicon} />
 	<title>vigil</title>
 	<meta name="robots" content="noindex" />
-	<!-- Applied before first paint so a stored theme choice never flashes the other one. -->
-	{@html `<script>try{var t=localStorage.getItem('theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}<\/script>`}
 </svelte:head>
 
 {@render children()}

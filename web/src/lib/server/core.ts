@@ -8,18 +8,27 @@ import { env } from '$env/dynamic/private';
 import type { DriveState, LiveMessage, Snapshot, UpsState } from '$lib/types';
 import * as db from './db';
 import { SseParser } from './sse';
+import { CORE_DEFAULT_PORT, DATABASE_URL_DEFAULT, STREAM_SILENCE_TIMEOUT_MS } from '$lib/limits';
 
-// vigil-core sends a keepalive comment after 20s of silence, so going this long without a
-// single byte means the connection is dead even if the socket hasn't noticed.
-const SILENCE_TIMEOUT_MS = 40_000;
 const MIN_RETRY_MS = 1_000;
 const MAX_RETRY_MS = 30_000;
+
+/**
+ * How many browser streams may be open at once. Both Rust servers cap their consumers
+ * (`api.max_clients` in vigild, `MAX_CLIENTS` in vigil-core); this set was unbounded, which
+ * made a page left reloading in a loop enough to grow it without limit. Past the cap a new
+ * stream is refused with 503 rather than queued. docs/SECURITY.md §4.2.
+ *
+ * Generous for a dashboard: one tab is one subscriber, and a closed tab frees its slot as soon
+ * as the stream is cancelled.
+ */
+const MAX_SUBSCRIBERS = 64;
 
 type Subscriber = (message: LiveMessage) => void;
 
 class CoreLink {
-	readonly coreUrl = new URL('/live', env.CORE_URL || 'http://127.0.0.1:3001');
-	readonly sql = db.connect(env.DATABASE_URL || 'postgres://vigil@localhost/vigil');
+	readonly coreUrl = new URL('/live', env.CORE_URL || `http://127.0.0.1:${CORE_DEFAULT_PORT}`);
+	readonly sql = db.connect(env.DATABASE_URL || DATABASE_URL_DEFAULT);
 
 	coreConnected = false;
 	daemonConnected = false;
@@ -36,9 +45,19 @@ class CoreLink {
 		this.connect();
 	}
 
-	subscribe(subscriber: Subscriber): () => void {
+	/** The unsubscribe function, or null when {@link MAX_SUBSCRIBERS} is already reached. */
+	subscribe(subscriber: Subscriber): (() => void) | null {
+		if (this.subscribers.size >= MAX_SUBSCRIBERS) {
+			console.warn(`[vigil-web] refusing a live stream: already at ${MAX_SUBSCRIBERS} subscribers`);
+			return null;
+		}
 		this.subscribers.add(subscriber);
 		return () => this.subscribers.delete(subscriber);
+	}
+
+	/** For the health of the relay itself, not for the browser. */
+	get subscriberCount(): number {
+		return this.subscribers.size;
 	}
 
 	/** Everything a new browser needs before the next change arrives. */
@@ -60,7 +79,7 @@ class CoreLink {
 			request.destroy();
 			this.handleDisconnect(reason);
 		};
-		const silent = () => finish(`no data from vigil-core for ${SILENCE_TIMEOUT_MS / 1000}s`);
+		const silent = () => finish(`no data from vigil-core for ${STREAM_SILENCE_TIMEOUT_MS / 1000}s`);
 
 		const request = http.get(this.coreUrl, { headers: { Accept: 'text/event-stream' } }, (response) => {
 			if (response.statusCode !== 200) {
@@ -119,7 +138,7 @@ class CoreLink {
 
 	private armSilenceTimer(onSilence: () => void): void {
 		if (this.silenceTimer) clearTimeout(this.silenceTimer);
-		this.silenceTimer = setTimeout(onSilence, SILENCE_TIMEOUT_MS);
+		this.silenceTimer = setTimeout(onSilence, STREAM_SILENCE_TIMEOUT_MS);
 	}
 
 	private broadcast(message: LiveMessage): void {

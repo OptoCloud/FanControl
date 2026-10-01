@@ -9,11 +9,11 @@
 //! HBA. Assumes a little-endian 64-bit host.
 
 use crate::config::HbaConfig;
-use crate::log;
 use crate::mpt3;
 #[cfg(target_os = "linux")]
 use crate::mpt3::PageHeader;
 use crate::sensors::SensorReading;
+use tracing::{info, warn};
 
 pub struct HbaTemperatureProvider {
     config: HbaConfig,
@@ -51,14 +51,14 @@ impl HbaTemperatureProvider {
             Ok(reading) => {
                 let outcome = format!("available:{}", reading.label);
                 if self.last_logged_outcome.as_deref() != Some(&outcome) {
-                    log!(Info, "HBA temperature available via {}: {}C", reading.label, reading.celsius_or_null.unwrap_or_default());
+                    info!("HBA temperature available via {}: {}C", reading.label, reading.celsius_or_null.unwrap_or_default());
                     self.last_logged_outcome = Some(outcome);
                 }
                 reading
             }
             Err(reason) => {
                 if self.last_logged_outcome.as_deref() != Some(&reason) {
-                    log!(Warning, "HBA temperature unavailable: {reason}");
+                    warn!("HBA temperature unavailable: {reason}");
                     self.last_logged_outcome = Some(reason);
                 }
                 self.reset();
@@ -83,10 +83,10 @@ impl HbaTemperatureProvider {
 
     #[cfg(target_os = "linux")]
     fn read_page_7(&mut self) -> Result<SensorReading, String> {
-        if self.device.is_none() {
-            self.device = Some(linux::Device::open(&self.config.device_path)?);
-        }
-        let device = self.device.as_ref().expect("opened just above");
+        let device = match &self.device {
+            Some(device) => device,
+            None => self.device.insert(linux::Device::open(&self.config.device_path)?),
+        };
         let ioc_number = self.config.ioc_number;
 
         let header = match self.cached_header {
@@ -181,6 +181,7 @@ mod linux {
             // request for the whole duration of the call. The request-number cast is to
             // libc's own ioctl request type, which is c_int on musl and c_ulong on glibc;
             // the kernel only looks at the low 32 bits either way.
+            #[allow(unsafe_code, reason = "audited: the only ioctl in vigil, SAFETY above")]
             let result = unsafe { libc::ioctl(self.0.as_raw_fd(), MPT3COMMAND as libc::Ioctl, request.as_mut_ptr()) };
             if result < 0 {
                 return Err(format!(

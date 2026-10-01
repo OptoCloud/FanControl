@@ -22,6 +22,8 @@
 	const MARGIN = { top: 12, right: 16, bottom: 26, left: 40 };
 
 	let width = $state(640);
+	// A plain Set is correct here: toggle() assigns a fresh one rather than mutating this one,
+	// so the $state assignment is what drives reactivity.
 	let hidden = $state(new Set<string>());
 	let hoverTime = $state<number | null>(null);
 	let showTable = $state(false);
@@ -57,7 +59,10 @@
 
 	function medianStep(points: SeriesPoints): number {
 		if (points.length < 3) return Infinity;
-		const steps = points.slice(1).map((point, i) => point[0] - points[i][0]).sort((a, b) => a - b);
+		const steps = points
+			.slice(1)
+			.map((point, i) => point[0] - points[i][0])
+			.sort((a, b) => a - b);
 		return steps[steps.length >> 1];
 	}
 
@@ -91,6 +96,9 @@
 	}
 
 	function toggle(id: string) {
+		// SvelteSet is not needed: this builds a NEW Set and assigns it to the $state above,
+		// which is what makes the change reactive. Nothing is ever mutated in place.
+		// eslint-disable-next-line svelte/prefer-svelte-reactivity
 		const next = new Set(hidden);
 		if (!next.delete(id)) next.add(id);
 		hidden = next;
@@ -178,7 +186,12 @@
 				<defs>
 					<clipPath id={clipId}>
 						<!-- 2px of slack top and bottom, so a line sitting on an axis bound (100% duty) is not half cut. -->
-						<rect x={MARGIN.left} y={MARGIN.top - 2} width={Math.max(0, width - MARGIN.left - MARGIN.right)} height={HEIGHT - MARGIN.top - MARGIN.bottom + 4} />
+						<rect
+							x={MARGIN.left}
+							y={MARGIN.top - 2}
+							width={Math.max(0, width - MARGIN.left - MARGIN.right)}
+							height={HEIGHT - MARGIN.top - MARGIN.bottom + 4}
+						/>
 					</clipPath>
 				</defs>
 

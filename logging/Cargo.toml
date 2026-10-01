@@ -1,0 +1,16 @@
+[package]
+name = "vigil-logging"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "vigil's logging: one line per message to stderr, with an sd-daemon priority prefix under journald"
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+tracing = "0.1.44"
+tracing-journald = "0.3.2"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+vigil-protocol = { path = "../protocol" }

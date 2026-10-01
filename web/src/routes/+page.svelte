@@ -120,7 +120,9 @@
 	const sensors = $derived(snapshot?.sensors ?? []);
 	const sensor = (id: string) => sensors.find((s) => s.id === id);
 	const hottest = (category: SensorReading['category']) =>
-		sensors.filter((s) => s.category === category && s.celsiusOrNull !== null).sort((a, b) => (b.celsiusOrNull as number) - (a.celsiusOrNull as number))[0];
+		sensors
+			.filter((s) => s.category === category && s.celsiusOrNull !== null)
+			.sort((a, b) => (b.celsiusOrNull as number) - (a.celsiusOrNull as number))[0];
 
 	const hottestDrive = $derived(hottest('drive'));
 	const hottestDimm = $derived(hottest('memory'));
@@ -172,23 +174,50 @@
 		return last && last[0] >= upsTime ? base : [...base, [upsTime, value]];
 	}
 	const upsPercentSeries = $derived<ChartSeries[]>([
-		{ id: 'charge', label: 'Battery charge', color: 'var(--series-3)', points: withLiveUpsPoint(history?.ups.charge, upsReading?.batteryCharge) },
+		{
+			id: 'charge',
+			label: 'Battery charge',
+			color: 'var(--series-3)',
+			points: withLiveUpsPoint(history?.ups.charge, upsReading?.batteryCharge)
+		},
 		{ id: 'load', label: 'Load', color: 'var(--series-2)', points: withLiveUpsPoint(history?.ups.load, upsReading?.load) }
 	]);
 	const mainsSeries = $derived<ChartSeries[]>([
-		{ id: 'inputVoltage', label: 'Mains in', color: 'var(--series-1)', points: withLiveUpsPoint(history?.ups.inputVoltage, upsReading?.inputVoltage) }
+		{
+			id: 'inputVoltage',
+			label: 'Mains in',
+			color: 'var(--series-1)',
+			points: withLiveUpsPoint(history?.ups.inputVoltage, upsReading?.inputVoltage)
+		}
 	]);
 	const upsSummary = $derived(summarizeUps(ups));
 
 	const tilePoints = (id: string) => temperatureSeries.find((s) => s.id === id)?.points ?? [];
 
 	const status = $derived.by((): { level: 'good' | 'warning' | 'critical'; label: string; detail: string } => {
-		if (!streamConnected) return { level: 'warning', label: 'Connecting', detail: 'Waiting for the live stream from the dashboard server.' };
-		if (!coreConnected) return { level: 'critical', label: 'vigil-core unreachable', detail: 'The dashboard cannot reach vigil-core, so nothing live is shown, and history and alerts may be paused with it.' };
-		if (!daemonConnected) return { level: 'critical', label: 'Daemon unreachable', detail: 'vigil-core cannot reach vigild. If it is not running, the fans are on BIOS control.' };
+		if (!streamConnected)
+			return { level: 'warning', label: 'Connecting', detail: 'Waiting for the live stream from the dashboard server.' };
+		if (!coreConnected)
+			return {
+				level: 'critical',
+				label: 'vigil-core unreachable',
+				detail: 'The dashboard cannot reach vigil-core, so nothing live is shown, and history and alerts may be paused with it.'
+			};
+		if (!daemonConnected)
+			return {
+				level: 'critical',
+				label: 'Daemon unreachable',
+				detail: 'vigil-core cannot reach vigild. If it is not running, the fans are on BIOS control.'
+			};
 		if (!snapshot) return { level: 'warning', label: 'Waiting for data', detail: 'Connected, but no snapshot has arrived yet.' };
-		if (snapshotAge > 15_000) return { level: 'warning', label: 'Stale', detail: `The last snapshot is ${relativeTime(snapshot.timestampUtc, now)} old.` };
-		if (!snapshot.controlLoopHealthy) return { level: 'critical', label: 'Control loop unhealthy', detail: 'A fan channel could not be driven, or the loop has stopped polling.' };
+		if (snapshotAge > 15_000)
+			return { level: 'warning', label: 'Stale', detail: `The last snapshot is ${relativeTime(snapshot.timestampUtc, now)} old.` };
+		if (!snapshot.controlLoopHealthy)
+			return {
+				level: 'critical',
+				label: 'Control loop unhealthy',
+				detail: 'A fan channel could not be driven, or the loop has stopped polling.'
+			};
 		return { level: 'good', label: 'Live', detail: '' };
 	});
 </script>
@@ -255,13 +284,23 @@
 		<LineChart title="Fan duty" series={dutySeries} from={chartFrom} to={chartTo} unit="%" yDomain={[0, 100]} {loading} />
 	</div>
 	{#if fanIds.length > MAX_SERIES}
-		<p class="muted note">{fanIds.length - MAX_SERIES} more fan(s) are not charted: six is as many lines as colour can keep apart. All of them are listed below.</p>
+		<p class="muted note">
+			{fanIds.length - MAX_SERIES} more fan(s) are not charted: six is as many lines as colour can keep apart. All of them are listed below.
+		</p>
 	{/if}
 
 	{#if ups.enabled}
 		<section class="power" aria-label="Power">
 			<UpsPanel {ups} inputVoltage={history?.ups.inputVoltage ?? []} {now} />
-			<LineChart title="UPS battery and load" series={upsPercentSeries} from={chartFrom} to={chartTo} unit="%" yDomain={[0, 100]} {loading} />
+			<LineChart
+				title="UPS battery and load"
+				series={upsPercentSeries}
+				from={chartFrom}
+				to={chartTo}
+				unit="%"
+				yDomain={[0, 100]}
+				{loading}
+			/>
 			<LineChart title="Mains voltage" series={mainsSeries} from={chartFrom} to={chartTo} unit=" V" {loading} />
 		</section>
 	{/if}

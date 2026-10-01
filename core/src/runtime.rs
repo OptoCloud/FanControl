@@ -5,22 +5,27 @@
 //!
 //! The live view must work without a database, so a database failure is retried, never fatal.
 
-use crate::alerts::{ConditionTracker, NewEvent, conditions_in, diff_drive_health, ups_conditions};
+use crate::alerts::{ConditionDebouncer, NewEvent, conditions_in, diff_drive_health, ups_conditions};
 use crate::config::Config;
 use crate::daemon::DaemonEvent;
-use crate::{db, log, notify};
+use crate::{db, ntfy};
 use postgres::Client;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant, SystemTime};
+use tokio::sync::mpsc::Sender as SubscriberSender;
+use tokio::sync::mpsc::error::TrySendError;
+use tracing::{error, info, warn};
 use vigil_protocol::{DriveState, EventRecord, LiveMessage, Severity, Snapshot, UpsReading, UpsState, now_rfc3339};
 
 pub enum Input {
     Daemon(DaemonEvent),
     Ups(Box<Result<UpsReading, String>>),
     /// A live subscriber: gets the current state at once, then every change as a JSON line.
-    Subscribe(SyncSender<Arc<str>>),
+    /// A new live subscriber. The sender is tokio's because the other end is an axum
+    /// SSE stream; `try_send` works from this synchronous thread either way.
+    Subscribe(SubscriberSender<Arc<str>>),
 }
 
 const DATABASE_RETRY: Duration = Duration::from_secs(15);
@@ -40,16 +45,16 @@ pub struct Runtime {
     ups: UpsState,
     ups_unreadable_since: Option<Instant>,
 
-    tracker: ConditionTracker,
+    tracker: ConditionDebouncer,
     // The UPS reports its own state, so one poll is enough: an OB flag is a real power event, not a flaky read.
-    ups_tracker: ConditionTracker,
+    ups_tracker: ConditionDebouncer,
     known_sensor_ids: BTreeSet<String>,
     last_drive_health_as_of: String,
     last_persisted: Option<Instant>,
     last_ups_persisted: Option<Instant>,
     last_inventory: Option<Instant>,
 
-    subscribers: Vec<SyncSender<Arc<str>>>,
+    subscribers: Vec<SubscriberSender<Arc<str>>>,
 }
 
 impl Runtime {
@@ -67,8 +72,8 @@ impl Runtime {
             drives: BTreeMap::new(),
             ups,
             ups_unreadable_since: Some(Instant::now()),
-            tracker: ConditionTracker::new(3),
-            ups_tracker: ConditionTracker::new(1),
+            tracker: ConditionDebouncer::new(3),
+            ups_tracker: ConditionDebouncer::new(1),
             known_sensor_ids: BTreeSet::new(),
             last_drive_health_as_of: String::new(),
             last_persisted: None,
@@ -144,7 +149,7 @@ impl Runtime {
                 }
                 self.database = Some(client);
                 self.last_database_error.clear();
-                log!(Info, "database ready");
+                info!("database ready");
                 self.broadcast(&LiveMessage::Drives { drives: self.drive_list() });
             }
             Err(error) => {
@@ -173,7 +178,7 @@ impl Runtime {
 
     fn report_database_error(&mut self, doing: &str, error: &str) {
         if error != self.last_database_error {
-            log!(Error, "database error while {doing}: {error}");
+            error!("database error while {doing}: {error}");
             self.last_database_error = error.to_owned();
         }
     }
@@ -239,7 +244,7 @@ impl Runtime {
         self.broadcast(&LiveMessage::Daemon { connected });
 
         if connected {
-            log!(Info, "connected to vigild");
+            info!("connected to vigild");
             self.daemon_lost_since = None;
             if self.daemon_lost_raised {
                 self.daemon_lost_raised = false;
@@ -251,7 +256,7 @@ impl Runtime {
             }
         } else {
             let reason = reason.unwrap_or_else(|| "unknown reason".to_owned());
-            log!(Warning, "vigild connection lost: {reason}");
+            warn!("vigild connection lost: {reason}");
             self.daemon_lost_since = Some((Instant::now(), reason));
         }
     }
@@ -260,7 +265,7 @@ impl Runtime {
         match result {
             Ok(reading) => {
                 if self.ups.reading.is_none() {
-                    log!(Info, "reading the UPS: {}", reading.status.join(" "));
+                    info!("reading the UPS: {}", reading.status.join(" "));
                 }
                 self.ups_unreadable_since = None;
                 self.ups.error = None;
@@ -274,7 +279,7 @@ impl Runtime {
             }
             Err(error) => {
                 if self.ups.error.as_deref() != Some(&error) {
-                    log!(Warning, "cannot read the UPS: {error}");
+                    warn!("cannot read the UPS: {error}");
                 }
                 if self.ups.reading.is_some() || self.ups_unreadable_since.is_none() {
                     self.ups_unreadable_since = Some(Instant::now());
@@ -296,8 +301,8 @@ impl Runtime {
 
     fn raise(&mut self, event: NewEvent) {
         match event.severity {
-            Severity::Info => log!(Info, "{}", event.message),
-            _ => log!(Warning, "{:?}: {}", event.severity, event.message),
+            Severity::Info => info!("{}", event.message),
+            _ => warn!("{:?}: {}", event.severity, event.message),
         }
 
         let record = self
@@ -315,7 +320,7 @@ impl Runtime {
         if event.severity != Severity::Info
             && let Some(url) = &self.config.ntfy_url
         {
-            notify::send(url, &event);
+            ntfy::send(url, &event);
         }
     }
 
@@ -333,7 +338,7 @@ impl Runtime {
         messages
     }
 
-    fn subscribe(&mut self, subscriber: SyncSender<Arc<str>>) {
+    fn subscribe(&mut self, subscriber: SubscriberSender<Arc<str>>) {
         for message in self.current_state() {
             if subscriber.try_send(serialize(&message)).is_err() {
                 return;
@@ -351,7 +356,7 @@ impl Runtime {
         let json = serialize(message);
         self.subscribers.retain(|subscriber| match subscriber.try_send(Arc::clone(&json)) {
             Ok(()) => true,
-            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => false,
+            Err(TrySendError::Full(_) | TrySendError::Closed(_)) => false,
         });
     }
 }
@@ -387,8 +392,14 @@ mod tests {
         Snapshot { timestamp_utc: now_rfc3339(), sensors: vec![], fans: vec![fan], drive_health: vec![], control_loop_healthy: true }
     }
 
-    fn messages(receiver: &mpsc::Receiver<Arc<str>>) -> Vec<String> {
-        receiver.try_iter().map(|json| json.to_string()).collect()
+    /// Everything queued for a subscriber right now. tokio's receiver has no iterator, so
+    /// this drains it with try_recv, which is the same thing for a test.
+    fn messages(receiver: &mut tokio::sync::mpsc::Receiver<Arc<str>>) -> Vec<String> {
+        let mut drained = Vec::new();
+        while let Ok(json) = receiver.try_recv() {
+            drained.push(json.to_string());
+        }
+        drained
     }
 
     #[test]
@@ -397,9 +408,9 @@ mod tests {
         runtime.handle_daemon_connection(true, None);
         runtime.handle_snapshot(snapshot(false));
 
-        let (sender, receiver) = mpsc::sync_channel(64);
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(64);
         runtime.subscribe(sender);
-        let first = messages(&receiver);
+        let first = messages(&mut receiver);
         assert_eq!(first.len(), 4);
         assert!(first[0].contains(r#""type":"daemon","connected":true"#));
         assert!(first[1].starts_with(r#"{"type":"snapshot""#));
@@ -409,7 +420,7 @@ mod tests {
         for _ in 0..3 {
             runtime.handle_snapshot(snapshot(true));
         }
-        let later = messages(&receiver);
+        let later = messages(&mut receiver);
         let events: Vec<_> = later.iter().filter(|m| m.contains(r#""type":"event""#)).collect();
         assert_eq!(events.len(), 1);
         assert!(events[0].contains(r#""severity":"critical""#) && events[0].contains("fan-stalled:drive-cage"));
@@ -418,7 +429,7 @@ mod tests {
     #[test]
     fn a_subscriber_that_cannot_keep_up_is_dropped() {
         let mut runtime = Runtime::new(config());
-        let (sender, _receiver) = mpsc::sync_channel(3);
+        let (sender, _receiver) = tokio::sync::mpsc::channel(3);
         runtime.subscribe(sender);
         assert_eq!(runtime.subscribers.len(), 1);
 
@@ -430,31 +441,31 @@ mod tests {
     fn news_already_queued_is_handled_before_an_outage_is_judged() {
         let config = Config { daemon_lost_after: Duration::ZERO, ..config() };
         let (inputs, receiver) = mpsc::channel();
-        let (subscriber, stream) = mpsc::sync_channel(64);
+        let (subscriber, mut stream) = tokio::sync::mpsc::channel(64);
         inputs.send(Input::Subscribe(subscriber)).unwrap();
         inputs.send(Input::Daemon(DaemonEvent::Connected)).unwrap();
         drop(inputs);
 
         Runtime::new(config).run(receiver);
 
-        assert!(!messages(&stream).iter().any(|m| m.contains("daemon-lost")));
+        assert!(!messages(&mut stream).iter().any(|m| m.contains("daemon-lost")));
     }
 
     #[test]
     fn a_lasting_daemon_outage_is_raised_once_and_cleared_on_reconnect() {
         let mut runtime = Runtime::new(Config { daemon_lost_after: Duration::ZERO, ..config() });
-        let (sender, receiver) = mpsc::sync_channel(64);
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(64);
         runtime.subscribe(sender);
-        messages(&receiver);
+        messages(&mut receiver);
 
         runtime.handle_daemon_connection(false, Some("connection refused".to_owned()));
         runtime.tick();
         runtime.tick();
-        let lost: Vec<_> = messages(&receiver).into_iter().filter(|m| m.contains("daemon-lost")).collect();
+        let lost: Vec<_> = messages(&mut receiver).into_iter().filter(|m| m.contains("daemon-lost")).collect();
         assert_eq!(lost.len(), 1);
         assert!(lost[0].contains("vigild is unreachable (not connected yet)"));
 
         runtime.handle_daemon_connection(true, None);
-        assert!(messages(&receiver).iter().any(|m| m.contains("vigild is reachable again.")));
+        assert!(messages(&mut receiver).iter().any(|m| m.contains("vigild is reachable again.")));
     }
 }

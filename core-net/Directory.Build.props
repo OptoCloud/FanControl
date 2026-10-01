@@ -1,0 +1,36 @@
+<Project>
+  <!-- Settings shared by every project here. The C# analogue of the workspace lints in
+       Cargo.toml and docs/STYLE.md §8: warnings are errors, nothing is implicitly nullable,
+       and the analyzers run at the strictest level the SDK offers. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <!-- A warning that is allowed to accumulate is a warning nobody reads. -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+
+    <!-- "recommended", not "all": `all` turns every opinionated IDE style rule (use an
+         explicit type here, collapse this if) into a build error, which is noise of the same
+         kind as clippy's unreachable_pub was in the Rust half. The correctness analysers are
+         what earn their keep; formatting is `dotnet format`'s job and .editorconfig's. -->
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+
+    <!-- Deliberately NOT EnforceCodeStyleInBuild: combined with TreatWarningsAsErrors it turns
+         every style *suggestion* into a build failure. The split here is the same one the Rust
+         half has - the build enforces correctness (clippy / the CA analysers), and a separate
+         `dotnet format` in verify mode, run by scripts/check.sh, enforces formatting exactly as
+         `cargo fmt` in check mode does. .editorconfig is still the single word on style. -->
+
+    <!-- CA1062 asks for a null check on every public parameter. Nullable reference types
+         already say which ones can be null, and repeating it in a guard clause is the thing
+         NRT replaced. -->
+    <NoWarn>$(NoWarn);CA1062</NoWarn>
+
+    <!-- vigil runs on one Linux host and formats numbers and dates itself; loading ICU for
+         that is 30 MB of nothing. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+</Project>
