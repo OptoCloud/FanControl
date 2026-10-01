@@ -45,6 +45,19 @@ public sealed class VigilOptions
 
     public double NutPollSeconds { get; init; } = 5;
 
+    /// <summary>
+    /// How long the host takes to shut down once upsmon starts it, guests included. Optional;
+    /// with it the dashboard shows what the UPS's <c>battery.runtime.low</c> leaves to spare,
+    /// and an alert says when it leaves nothing.
+    /// </summary>
+    public double? HostShutdownSeconds { get; init; }
+
+    /// <summary>
+    /// °C. A lead-acid battery's life roughly halves for every 8 to 10 °C it spends above 25 °C;
+    /// 40 is where that becomes worth acting on rather than watching.
+    /// </summary>
+    public double UpsBatteryTemperatureWarn { get; init; } = 40;
+
     /// <summary>Optional. HTTPS is free in .NET, so this no longer goes through curl.</summary>
     public string? NtfyUrl { get; init; }
 

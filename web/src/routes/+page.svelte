@@ -28,7 +28,14 @@
 	let daemonConnected = $state(false);
 	let drives = $state<DriveState[]>([]);
 	let events = $state<EventRecord[]>([]);
-	let ups = $state<UpsState>({ enabled: false, name: '', reading: null, error: null });
+	// Disabled, so hidden until vigil-core sends the real one: none of these values is ever shown.
+	let ups = $state<UpsState>({
+		enabled: false,
+		name: '',
+		reading: null,
+		error: null,
+		limits: { hostShutdownSeconds: null, batteryTemperatureWarn: 0 }
+	});
 
 	// The stream IS the connection to vigil-core: there is no relay in between any more, so
 	// whether EventSource is open is whether vigil-core can be reached.

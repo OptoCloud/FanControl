@@ -73,7 +73,30 @@ export interface UpsReading {
 	inputVoltage: number | null;
 	outputVoltage: number | null;
 	batteryVoltage: number | null;
+	/** °C. Heat is what ages a lead-acid battery fastest. */
+	batteryTemperature: number | null;
+	/** battery.date: when the battery was installed, as the UPS was told. Formatted as the driver pleases. */
+	batteryDate: string | null;
+	/** battery.runtime.low: below this much runtime the UPS is LB and upsmon starts the shutdown. */
+	lowBatteryRuntimeSeconds: number | null;
+	/** battery.charge.low, percent: the other way to LB, whichever comes first. */
+	lowBatteryCharge: number | null;
+	/** input.transfer.reason: why the UPS last went to battery, e.g. "LowInputVoltage". */
+	transferReason: string | null;
+	outputFrequency: number | null;
+	/** Amps. */
+	outputCurrent: number | null;
+	/** How many monitors (upsmon) are logged in to upsd. 0 means nothing will shut the host down; null, upsd wouldn't say. */
+	monitors: number | null;
 	variables: Record<string, string>;
+}
+
+/** The operator's numbers the UPS is judged against, where the reading can't say. The shutdown thresholds come from upsd. */
+export interface UpsLimits {
+	/** How long the host takes to shut down (HOST_SHUTDOWN_SECONDS). */
+	hostShutdownSeconds: number | null;
+	/** °C at which the battery counts as too hot. */
+	batteryTemperatureWarn: number;
 }
 
 export interface UpsState {
@@ -85,6 +108,7 @@ export interface UpsState {
 	reading: UpsReading | null;
 	/** Why there is no reading: a connection error, or upsd's own (DATA-STALE, DRIVER-NOT-CONNECTED, UNKNOWN-UPS). */
 	error: string | null;
+	limits: UpsLimits;
 }
 
 // ---- What the dashboard adds on top ----

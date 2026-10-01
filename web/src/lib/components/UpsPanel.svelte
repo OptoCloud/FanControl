@@ -1,7 +1,15 @@
 <script lang="ts">
 	import { relativeTime } from '$lib/chart/scale';
 	import type { SeriesPoints, UpsState } from '$lib/types';
-	import { formatRuntime, summarizeUps } from '$lib/ups';
+	import {
+		describeTransferReason,
+		formatDuration,
+		formatRuntime,
+		guardVerdict,
+		marginVerdict,
+		shutdownMargin,
+		summarizeUps
+	} from '$lib/ups';
 	import StatusBadge from './StatusBadge.svelte';
 
 	interface Props {
@@ -15,6 +23,10 @@
 
 	const reading = $derived(ups.reading);
 	const summary = $derived(summarizeUps(ups));
+	const margin = $derived(shutdownMargin(ups));
+	const marginBadge = $derived(margin ? marginVerdict(margin) : null);
+	const guard = $derived(reading ? guardVerdict(reading.monitors) : null);
+	const batteryHot = $derived(reading?.batteryTemperature != null && reading.batteryTemperature >= ups.limits.batteryTemperatureWarn);
 
 	const voltageRange = $derived.by(() => {
 		if (inputVoltage.length === 0) return null;
@@ -23,6 +35,14 @@
 	});
 
 	const variables = $derived(reading ? Object.entries(reading.variables).sort(([a], [b]) => a.localeCompare(b)) : []);
+	const outputDetail = $derived(
+		[
+			reading?.outputFrequency != null ? `${reading.outputFrequency.toFixed(1)} Hz` : null,
+			reading?.outputCurrent != null ? `${reading.outputCurrent.toFixed(1)} A` : null
+		]
+			.filter((part) => part !== null)
+			.join(', ')
+	);
 	const volts = (value: number | null) => (value === null ? 'n/a' : `${value.toFixed(value >= 100 ? 0 : 1)} V`);
 </script>
 
@@ -76,21 +96,78 @@
 						>{reading.batteryRuntimeSeconds === null ? 'n/a' : formatRuntime(reading.batteryRuntimeSeconds)}</td
 					>
 				</tr>
+				{#if margin}
+					<tr>
+						<th scope="row">Shutdown at</th>
+						<td colspan="2" class="numeric value">
+							{formatDuration(margin.startsAt)} left{#if reading.lowBatteryCharge !== null}&nbsp;or {Math.round(
+									reading.lowBatteryCharge
+								)}%{/if}
+							{#if margin.untilShutdown !== null}<span class="muted detail"
+									>after {formatRuntime(margin.untilShutdown)} on battery at this load</span
+								>{/if}
+						</td>
+					</tr>
+				{/if}
+				{#if marginBadge && ups.limits.hostShutdownSeconds !== null}
+					<tr>
+						<th scope="row">Shutdown margin</th>
+						<td colspan="2" class="numeric value">
+							<StatusBadge level={marginBadge.level} label={marginBadge.label} />
+							<span class="muted detail">orion takes {formatDuration(ups.limits.hostShutdownSeconds)} to shut down</span>
+						</td>
+					</tr>
+				{/if}
+				{#if guard}
+					<tr>
+						<th scope="row">Watched by</th>
+						<td colspan="2" class="numeric value"><StatusBadge level={guard.level} label={guard.label} /></td>
+					</tr>
+				{/if}
 				<tr>
 					<th scope="row">Mains in</th>
 					<td colspan="2" class="numeric value">
 						{volts(reading.inputVoltage)}
-						{#if voltageRange}<span class="muted">{voltageRange.min.toFixed(0)} to {voltageRange.max.toFixed(0)} V in range</span>{/if}
+						{#if voltageRange}<span class="muted detail">{voltageRange.min.toFixed(0)} to {voltageRange.max.toFixed(0)} V in range</span
+							>{/if}
 					</td>
 				</tr>
 				<tr>
 					<th scope="row">Output</th>
-					<td colspan="2" class="numeric value">{volts(reading.outputVoltage)}</td>
+					<td colspan="2" class="numeric value">
+						{volts(reading.outputVoltage)}
+						{#if outputDetail}<span class="muted detail">{outputDetail}</span>{/if}
+					</td>
 				</tr>
+				{#if reading.transferReason !== null}
+					<tr>
+						<th scope="row">Last transfer</th>
+						<td colspan="2" class="numeric value">{describeTransferReason(reading.transferReason)}</td>
+					</tr>
+				{/if}
 				<tr>
 					<th scope="row">Battery voltage</th>
 					<td colspan="2" class="numeric value">{volts(reading.batteryVoltage)}</td>
 				</tr>
+				{#if reading.batteryTemperature !== null}
+					<tr>
+						<th scope="row">Battery temperature</th>
+						<td colspan="2" class="numeric value">
+							{#if batteryHot}
+								<StatusBadge level="warning" label="{Math.round(reading.batteryTemperature)} °C" />
+							{:else}
+								{Math.round(reading.batteryTemperature)} °C
+							{/if}
+							<span class="muted detail">alert at {ups.limits.batteryTemperatureWarn} °C</span>
+						</td>
+					</tr>
+				{/if}
+				{#if reading.batteryDate !== null}
+					<tr>
+						<th scope="row">Battery installed</th>
+						<td colspan="2" class="numeric value">{reading.batteryDate}</td>
+					</tr>
+				{/if}
 			</tbody>
 		</table>
 
@@ -181,6 +258,14 @@
 	.value .muted {
 		font-weight: 400;
 		margin-left: 6px;
+	}
+
+	/* A second line under the value, so a long note wraps rather than widening the card. */
+	.value .detail {
+		display: block;
+		margin-left: 0;
+		white-space: normal;
+		font-size: 12px;
 	}
 
 	details {

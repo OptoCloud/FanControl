@@ -24,6 +24,7 @@ import type {
 	SensorReading,
 	Severity,
 	Snapshot,
+	UpsLimits,
 	UpsReading,
 	UpsState
 } from './types';
@@ -91,9 +92,18 @@ const TYPE_KEYS = {
 		inputVoltage: 1,
 		outputVoltage: 1,
 		batteryVoltage: 1,
+		batteryTemperature: 1,
+		batteryDate: 1,
+		lowBatteryRuntimeSeconds: 1,
+		lowBatteryCharge: 1,
+		transferReason: 1,
+		outputFrequency: 1,
+		outputCurrent: 1,
+		monitors: 1,
 		variables: 1
 	} satisfies Record<keyof UpsReading, 1>,
-	UpsState: { enabled: 1, name: 1, reading: 1, error: 1 } satisfies Record<keyof UpsState, 1>,
+	UpsLimits: { hostShutdownSeconds: 1, batteryTemperatureWarn: 1 } satisfies Record<keyof UpsLimits, 1>,
+	UpsState: { enabled: 1, name: 1, reading: 1, error: 1, limits: 1 } satisfies Record<keyof UpsState, 1>,
 	DriveState: {
 		wwn: 1,
 		port: 1,

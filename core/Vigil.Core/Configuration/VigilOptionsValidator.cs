@@ -29,6 +29,17 @@ public sealed class VigilOptionsValidator : IValidateOptions<VigilOptions>
             }
         }
 
+        if (options.HostShutdownSeconds is { } shutdown && (!double.IsFinite(shutdown) || shutdown <= 0))
+        {
+            problems.Add($"HOST_SHUTDOWN_SECONDS must be a positive number of seconds when set, got '{shutdown}'.");
+        }
+
+        // A typo such as 400 would make the alert unreachable; 0 would raise it forever.
+        if (!double.IsFinite(options.UpsBatteryTemperatureWarn) || options.UpsBatteryTemperatureWarn is < 20 or > 80)
+        {
+            problems.Add($"UPS_BATTERY_TEMPERATURE_WARN must be between 20 and 80 °C, got '{options.UpsBatteryTemperatureWarn}'.");
+        }
+
         if (options.NutPort is < 1 or > 65535)
         {
             problems.Add($"NUT_PORT must be a port number, got '{options.NutPort}'.");

@@ -67,10 +67,10 @@ public sealed class ConditionDebouncerTests
     {
         var debouncer = new ConditionDebouncer(1);
 
-        var raised = Assert.Single(debouncer.Update(UpsConditions.Of(UpsConditionsTests.Ups(["OB"], null, null), TimeSpan.Zero)));
+        var raised = Assert.Single(debouncer.Update(UpsConditions.Of(UpsConditionsTests.Ups(["OB"], null, null), UpsConditionsTests.Fresh)));
         Assert.Equal(Severity.Warning, raised.Severity);
 
-        var cleared = Assert.Single(debouncer.Update(UpsConditions.Of(UpsConditionsTests.Ups(["OL"], null, null), TimeSpan.Zero)));
+        var cleared = Assert.Single(debouncer.Update(UpsConditions.Of(UpsConditionsTests.Ups(["OL"], null, null), UpsConditionsTests.Fresh)));
         Assert.Equal("Mains power is back: the UPS is online again.", cleared.Message);
     }
 

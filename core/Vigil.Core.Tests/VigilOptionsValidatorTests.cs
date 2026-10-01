@@ -42,4 +42,25 @@ public sealed class VigilOptionsValidatorTests
         Assert.Contains("NTFY_URL", problem, StringComparison.Ordinal);
         Assert.DoesNotContain("private-topic", problem, StringComparison.Ordinal);
     }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-84)]
+    [InlineData(double.NaN)]
+    public void AShutdownTimeThatIsNotPositiveIsRefused(double seconds)
+    {
+        var problem = Assert.Single(Problems(new VigilOptions { HostShutdownSeconds = seconds }));
+
+        Assert.Contains("HOST_SHUTDOWN_SECONDS", problem, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(0)] // Would raise the alert forever.
+    [InlineData(400)] // A typo for 40: would never raise it.
+    public void ABatteryTemperatureLimitOutsideWhatABatteryCanReachIsRefused(double celsius)
+    {
+        var problem = Assert.Single(Problems(new VigilOptions { UpsBatteryTemperatureWarn = celsius }));
+
+        Assert.Contains("UPS_BATTERY_TEMPERATURE_WARN", problem, StringComparison.Ordinal);
+    }
 }

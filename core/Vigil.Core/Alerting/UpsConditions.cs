@@ -3,6 +3,12 @@ using Vigil.Core.Protocol;
 
 namespace Vigil.Core.Alerting;
 
+/// <summary>What judging the UPS needs besides its state: how long things have lasted, and what is raised.</summary>
+/// <param name="UnreadableFor">How long there has been no reading that names a power source.</param>
+/// <param name="UnguardedFor">How long upsd has reported no monitor logged in.</param>
+/// <param name="BatteryHotRaised">Whether <see cref="UpsConditions.BatteryHot"/> is raised, for its hysteresis.</param>
+public sealed record UpsWatch(TimeSpan UnreadableFor, TimeSpan UnguardedFor, bool BatteryHotRaised);
+
 /// <summary>The problems visible in the UPS's state.</summary>
 public static class UpsConditions
 {
@@ -11,6 +17,22 @@ public static class UpsConditions
     /// upsd restart is not worth an event; a lasting gap means a power cut would go unseen.
     /// </summary>
     public static readonly TimeSpan UnreadableGrace = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// How long upsd may report no monitor before that is a problem. upsmon logs back in within
+    /// its POLLFREQ (5s by default) of an upsd restart, so a gap past this is a upsmon that is
+    /// not coming back.
+    /// </summary>
+    public static readonly TimeSpan UnguardedGrace = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// How far below the limit a hot battery has to cool before the alert clears, so a battery
+    /// sitting at the limit does not raise and clear on every tenth of a degree of noise.
+    /// </summary>
+    public const double BatteryCoolingMargin = 2.0;
+
+    /// <summary>The one condition with hysteresis, so the runtime has to say whether it is raised.</summary>
+    public const string BatteryHot = "ups-battery-hot";
 
     /// <summary>
     /// The <c>ups.status</c> flags that say where the load's power comes from. Every other flag
@@ -31,16 +53,17 @@ public static class UpsConditions
     }
 
     /// <summary>
-    /// Every problem visible in <paramref name="ups"/>. <paramref name="unreadableFor"/> is how
-    /// long there has been no reading that names a power source. Nothing, ever, when NUT is not
-    /// configured.
+    /// Every problem visible in <paramref name="ups"/>. Nothing, ever, when NUT is not configured.
     /// </summary>
     /// <remarks>
-    /// Without such a reading only <c>ups-unreadable</c> can be judged. Feed the result to the
-    /// debouncer as incomplete then, so the power conditions already raised stay raised.
+    /// Without a reading that names a power source only <c>ups-unreadable</c> can be judged. Feed
+    /// the result to the debouncer as incomplete then, so the conditions already raised stay raised.
     /// </remarks>
-    public static Conditions Of(UpsState ups, TimeSpan unreadableFor)
+    public static Conditions Of(UpsState ups, UpsWatch watch)
     {
+        ArgumentNullException.ThrowIfNull(ups);
+        ArgumentNullException.ThrowIfNull(watch);
+
         var conditions = new Conditions();
         if (!ups.Enabled)
         {
@@ -49,7 +72,7 @@ public static class UpsConditions
 
         if (ups.Reading is not { } reading || !NamesPowerSource(reading))
         {
-            if (unreadableFor >= UnreadableGrace)
+            if (watch.UnreadableFor >= UnreadableGrace)
             {
                 conditions["ups-unreadable"] = new Condition(
                     Severity.Warning,
@@ -60,6 +83,14 @@ public static class UpsConditions
             return conditions;
         }
 
+        AddStatusConditions(conditions, reading);
+        AddProtectionConditions(conditions, ups.Limits, reading, watch);
+        return conditions;
+    }
+
+    /// <summary>What the UPS says about itself in <c>ups.status</c>.</summary>
+    private static void AddStatusConditions(Conditions conditions, UpsReading reading)
+    {
         var flags = reading.Status.ToHashSet(StringComparer.Ordinal);
         var charge = reading.BatteryCharge is { } percent ? $" Battery at {Whole(percent)}%" : string.Empty;
         var runtime = reading.BatteryRuntimeSeconds is { } seconds ? $", about {Whole(seconds / 60.0)} min of runtime left" : string.Empty;
@@ -113,8 +144,38 @@ public static class UpsConditions
                 $"The UPS is {what}: the load is not protected.",
                 "The UPS is protecting the load again.");
         }
+    }
 
-        return conditions;
+    /// <summary>Whether the protection would work when it is needed: the shutdown, and the battery.</summary>
+    private static void AddProtectionConditions(Conditions conditions, UpsLimits limits, UpsReading reading, UpsWatch watch)
+    {
+        if (reading.Monitors == 0 && watch.UnguardedFor >= UnguardedGrace)
+        {
+            conditions["ups-unguarded"] = new Condition(
+                Severity.Critical,
+                "Nothing will shut orion down on a power cut: no upsmon is logged in to upsd. Check nut-monitor on orion.",
+                "upsmon is watching the UPS again.");
+        }
+
+        if (reading.LowBatteryRuntimeSeconds is { } startsAt && limits.HostShutdownSeconds is { } takes && startsAt < takes)
+        {
+            conditions["ups-shutdown-too-late"] = new Condition(
+                Severity.Warning,
+                $"orion's shutdown would not finish on battery: upsmon starts it with {Whole(startsAt)} s of runtime left, "
+                    + $"and it takes {Whole(takes)} s. Raise override.battery.runtime.low in ups.conf, or shorten the shutdown.",
+                "The low-battery warning leaves orion enough time to shut down again.");
+        }
+
+        var limit = limits.BatteryTemperatureWarn;
+        if (reading.BatteryTemperature is { } temperature
+            && (temperature >= limit || (watch.BatteryHotRaised && temperature > limit - BatteryCoolingMargin)))
+        {
+            conditions[BatteryHot] = new Condition(
+                Severity.Warning,
+                $"The UPS battery is at {Whole(temperature)} °C (alert at {Whole(limit)} °C). Heat ages a lead-acid battery "
+                    + "faster than anything else: check the UPS's airflow and the room.",
+                "The UPS battery has cooled down.");
+        }
     }
 
     private static string WhyUnreadable(UpsState ups) => ups.Reading switch

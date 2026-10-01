@@ -249,8 +249,30 @@ public sealed class VigilRuntimeTests
         Assert.Contains(Drain(subscriber), json => json.Contains("ups-unreadable", StringComparison.Ordinal));
     }
 
-    private static RuntimeInput.Ups UpsRead(params string[] status) =>
-        new(new UpsPoll.Read(UpsConditionsTests.Ups(status, 40.0, 600.0).Reading!)); // Ups() always sets a reading.
+    private static RuntimeInput.Ups UpsRead(params string[] status) => UpsRead(1, status);
+
+    private static RuntimeInput.Ups UpsRead(int? monitors, params string[] status) =>
+        new(new UpsPoll.Read(UpsConditionsTests.Ups(status, 40.0, 600.0, monitors: monitors).Reading!)); // Ups() always sets a reading.
+
+    [Fact]
+    public async Task ADeadUpsmonIsRaisedOnceItHasStayedGoneAndClearedWhenItIsBack()
+    {
+        var runtime = Runtime(nutHost: "10.0.0.4");
+        var subscriber = await Subscribe(runtime);
+        await runtime.HandleAsync(UpsRead(monitors: 1, "OL"), CancellationToken.None);
+        Drain(subscriber);
+
+        await runtime.HandleAsync(UpsRead(monitors: 0, "OL"), CancellationToken.None);
+        Assert.DoesNotContain(Drain(subscriber), json => json.Contains("ups-unguarded", StringComparison.Ordinal));
+
+        // No further poll needed: the tick notices that the gap has lasted.
+        _time.Advance(TimeSpan.FromSeconds(30));
+        await runtime.TickAsync(CancellationToken.None);
+        Assert.Contains(Drain(subscriber), json => json.Contains("no upsmon is logged in", StringComparison.Ordinal));
+
+        await runtime.HandleAsync(UpsRead(monitors: 1, "OL"), CancellationToken.None);
+        Assert.Contains(Drain(subscriber), json => json.Contains("upsmon is watching the UPS again.", StringComparison.Ordinal));
+    }
 
     [Theory]
     [InlineData(null)]

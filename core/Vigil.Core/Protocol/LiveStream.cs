@@ -41,8 +41,54 @@ public sealed record UpsReading
     public required double? OutputVoltage { get; init; }
     public required double? BatteryVoltage { get; init; }
 
+    /// <summary>°C. Heat is what ages a lead-acid battery fastest.</summary>
+    public required double? BatteryTemperature { get; init; }
+
+    /// <summary>
+    /// <c>battery.date</c>: when the battery was installed, as the UPS was told. Text, because
+    /// drivers format it as they please.
+    /// </summary>
+    public required string? BatteryDate { get; init; }
+
+    /// <summary>
+    /// <c>battery.runtime.low</c>: below this much runtime the UPS is LB, and upsmon starts the
+    /// shutdown. With the driver's <c>ignorelb</c> flag NUT judges this itself rather than
+    /// trusting the UPS, which is how orion's is set up.
+    /// </summary>
+    public required double? LowBatteryRuntimeSeconds { get; init; }
+
+    /// <summary><c>battery.charge.low</c>, percent: the other way to LB, whichever comes first.</summary>
+    public required double? LowBatteryCharge { get; init; }
+
+    /// <summary><c>input.transfer.reason</c>: why the UPS last went to battery, e.g. "LowInputVoltage".</summary>
+    public required string? TransferReason { get; init; }
+
+    public required double? OutputFrequency { get; init; }
+
+    /// <summary>Amps.</summary>
+    public required double? OutputCurrent { get; init; }
+
+    /// <summary>
+    /// How many monitors (upsmon) are logged in to upsd for this UPS, from <c>GET NUMLOGINS</c>.
+    /// Zero means nothing will shut the host down on a power cut. Null when upsd would not say.
+    /// </summary>
+    public required int? Monitors { get; init; }
+
     /// <summary>Sorted, as the Rust side uses a BTreeMap: the wire order has to match.</summary>
     public required IReadOnlyDictionary<string, string> Variables { get; init; }
+}
+
+/// <summary>
+/// The operator's numbers the UPS is judged against: configuration, where the reading cannot
+/// say. The shutdown thresholds are not here because upsd publishes them.
+/// </summary>
+public sealed record UpsLimits
+{
+    /// <summary>How long the host takes to shut down, <c>HOST_SHUTDOWN_SECONDS</c>. Null when unset.</summary>
+    public required double? HostShutdownSeconds { get; init; }
+
+    /// <summary>°C, <c>UPS_BATTERY_TEMPERATURE_WARN</c>: at this, the battery is too hot.</summary>
+    public required double BatteryTemperatureWarn { get; init; }
 }
 
 public sealed record UpsState
@@ -58,6 +104,8 @@ public sealed record UpsState
 
     /// <summary>Why there is no reading: a connection error, or upsd's own (DATA-STALE, ...).</summary>
     public required string? Error { get; init; }
+
+    public required UpsLimits Limits { get; init; }
 }
 
 /// <summary>

@@ -11,9 +11,10 @@ namespace Vigil.Core.Tests;
 public sealed class NutClientTests
 {
     /// <summary>
-    /// A upsd stand-in that answers every <c>LIST VAR</c> with <paramref name="answer"/>.
+    /// A upsd stand-in that answers every <c>LIST VAR</c> with <paramref name="answer"/>, and
+    /// every <c>GET NUMLOGINS</c> with <paramref name="numLogins"/>.
     /// </summary>
-    private static int FakeUpsd(string answer, bool closeImmediately = false)
+    private static int FakeUpsd(string answer, bool closeImmediately = false, string numLogins = "NUMLOGINS apc 1\n")
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
@@ -34,12 +35,15 @@ public sealed class NutClientTests
 
                 while (await reader.ReadLineAsync() is { } request)
                 {
-                    if (!request.StartsWith("LIST VAR", StringComparison.Ordinal))
+                    var reply = request.StartsWith("LIST VAR", StringComparison.Ordinal) ? answer
+                        : request.StartsWith("GET NUMLOGINS", StringComparison.Ordinal) ? numLogins
+                        : null;
+                    if (reply is null)
                     {
                         continue;
                     }
 
-                    await stream.WriteAsync(Encoding.UTF8.GetBytes(answer));
+                    await stream.WriteAsync(Encoding.UTF8.GetBytes(reply));
                     await stream.FlushAsync();
                 }
             }
@@ -83,6 +87,18 @@ public sealed class NutClientTests
         Assert.Equal(100, readings[0].Reading.BatteryCharge);
         Assert.Equal(["OL"], readings[0].Reading.Status);
         Assert.Equal("apc", readings[0].Reading.Name);
+        Assert.Equal(1, readings[0].Reading.Monitors);
+    }
+
+    [Fact]
+    public async Task AnUpsdThatWillNotCountMonitorsStillGivesAReading()
+    {
+        var answer = "BEGIN LIST VAR apc\nVAR apc ups.status \"OL\"\nEND LIST VAR apc\n";
+
+        var polls = await Collect(FakeUpsd(answer, numLogins: "ERR ACCESS-DENIED\n"), 1);
+
+        var read = Assert.IsType<UpsPoll.Read>(polls[0]);
+        Assert.Null(read.Reading.Monitors);
     }
 
     [Fact]

@@ -22,7 +22,8 @@ public abstract record UpsPoll
 /// <summary>
 /// The one connection vigil-core keeps to NUT's upsd: a plain TCP line protocol (RFC 9271).
 /// Variable reads are anonymous on upsd, so no login is needed. It polls <c>LIST VAR &lt;ups&gt;</c>
-/// on a fixed interval, the way upsmon does, reconnecting forever.
+/// and then <c>GET NUMLOGINS &lt;ups&gt;</c> on a fixed interval, the way upsmon does,
+/// reconnecting forever. It never logs in, so it is never one of the monitors it counts.
 /// </summary>
 /// <remarks>
 /// Hand-rolled because nothing maintained exists: <c>rups</c>, the one Rust NUT client, had 1,100
@@ -139,7 +140,16 @@ public sealed class NutClient(IOptions<VigilOptions> options)
         while (!cancellationToken.IsCancellationRequested)
         {
             budget.Allow(MaximumAnswerBytes);
-            yield return await ListVarAsync(network, reader, _options.NutUps, cancellationToken).ConfigureAwait(false);
+            var poll = await ListVarAsync(network, reader, _options.NutUps, cancellationToken).ConfigureAwait(false);
+
+            if (poll is UpsPoll.Read { Reading: var reading })
+            {
+                budget.Allow(MaximumAnswerBytes);
+                var monitors = await NumLoginsAsync(network, reader, _options.NutUps, cancellationToken).ConfigureAwait(false);
+                poll = new UpsPoll.Read(reading with { Monitors = monitors });
+            }
+
+            yield return poll;
 
             try
             {
@@ -199,6 +209,21 @@ public sealed class NutClient(IOptions<VigilOptions> options)
                 return new UpsPoll.Read(NutProtocol.ToReading(ups, variables, Rfc3339.Now()));
             }
         }
+    }
+
+    /// <summary>
+    /// How many monitors are logged in to upsd for <paramref name="ups"/>, which is what says
+    /// that something (upsmon) will shut the host down. Anonymous, like <c>LIST VAR</c>; null
+    /// when upsd will not say.
+    /// </summary>
+    private static async Task<int?> NumLoginsAsync(Stream stream, StreamReader reader, string ups, CancellationToken cancellationToken)
+    {
+        await stream.WriteAsync(Encoding.UTF8.GetBytes($"GET NUMLOGINS {ups}\n"), cancellationToken).ConfigureAwait(false);
+        await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+
+        var line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false)
+            ?? throw new IOException("upsd closed the connection");
+        return NutProtocol.ParseNumLogins(line, ups);
     }
 
     /// <summary>The start of a line from an unknown peer, safe to put in a log line.</summary>

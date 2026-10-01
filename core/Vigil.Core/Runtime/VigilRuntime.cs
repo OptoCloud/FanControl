@@ -52,6 +52,7 @@ public sealed class VigilRuntime
     private readonly SortedDictionary<string, DriveState> _drives = new(StringComparer.Ordinal);
     private UpsState _ups;
     private long? _upsUnreadableSince;
+    private long? _upsUnguardedSince;
 
     private readonly ConditionDebouncer _snapshotDebouncer = new(SnapshotThreshold);
     private readonly ConditionDebouncer _upsDebouncer = new(UpsThreshold);
@@ -70,7 +71,18 @@ public sealed class VigilRuntime
         _database = new DatabaseGate(logger, time);
         _persistInterval = TimeSpan.FromSeconds(options.PersistIntervalSeconds);
         _daemonLostAfter = TimeSpan.FromSeconds(options.DaemonLostAfterSeconds);
-        _ups = new UpsState { Enabled = options.NutHost is { Length: > 0 }, Name = options.NutUps, Reading = null, Error = null };
+        _ups = new UpsState
+        {
+            Enabled = options.NutHost is { Length: > 0 },
+            Name = options.NutUps,
+            Reading = null,
+            Error = null,
+            Limits = new UpsLimits
+            {
+                HostShutdownSeconds = options.HostShutdownSeconds,
+                BatteryTemperatureWarn = options.UpsBatteryTemperatureWarn,
+            },
+        };
         _daemonLostSince = (time.GetTimestamp(), "not connected yet");
         _upsUnreadableSince = time.GetTimestamp();
     }
@@ -152,8 +164,8 @@ public sealed class VigilRuntime
                 cancellationToken).ConfigureAwait(false);
         }
 
-        // The unreadable-UPS condition depends on time, not only on the next poll.
-        if (_ups.Enabled && _upsUnreadableSince is not null)
+        // The unreadable and unguarded conditions depend on time, not only on the next poll.
+        if (_ups.Enabled && (_upsUnreadableSince is not null || _upsUnguardedSince is not null))
         {
             await EvaluateUpsAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -281,6 +293,7 @@ public sealed class VigilRuntime
                 // A reading that names no power source is kept for the dashboard, but for alerting
                 // it is no reading at all, and the time without one keeps counting.
                 _upsUnreadableSince = UpsConditions.NamesPowerSource(reading) ? null : _upsUnreadableSince ?? _time.GetTimestamp();
+                _upsUnguardedSince = reading.Monitors == 0 ? _upsUnguardedSince ?? _time.GetTimestamp() : null;
                 _ups = _ups with { Reading = reading, Error = null };
 
                 if (_database.IsReady && IsDue(_lastUpsPersisted, _persistInterval))
@@ -310,11 +323,14 @@ public sealed class VigilRuntime
 
     private async Task EvaluateUpsAsync(CancellationToken cancellationToken)
     {
-        var unreadableFor = _upsUnreadableSince is { } since ? _time.GetElapsedTime(since) : TimeSpan.Zero;
+        var watch = new UpsWatch(
+            UnreadableFor: Elapsed(_upsUnreadableSince),
+            UnguardedFor: Elapsed(_upsUnguardedSince),
+            BatteryHotRaised: _upsDebouncer.IsRaised(UpsConditions.BatteryHot));
 
         // Unreadable, the UPS's power state is unknown, not back to normal: the conditions raised
         // before stay raised until a reading says otherwise.
-        var conditions = UpsConditions.Of(_ups, unreadableFor);
+        var conditions = UpsConditions.Of(_ups, watch);
         foreach (var newEvent in _upsDebouncer.Update(conditions, isComplete: _upsUnreadableSince is null))
         {
             await RaiseAsync(newEvent, cancellationToken).ConfigureAwait(false);
@@ -349,6 +365,9 @@ public sealed class VigilRuntime
     }
 
     private bool IsDue(long? last, TimeSpan interval) => last is not { } at || _time.GetElapsedTime(at) >= interval;
+
+    /// <summary>How long ago <paramref name="since"/> was; zero when it is not set.</summary>
+    private TimeSpan Elapsed(long? since) => since is { } at ? _time.GetElapsedTime(at) : TimeSpan.Zero;
 
     private List<DriveState> DriveList() => [.. _drives.Values];
 

@@ -80,6 +80,46 @@ public sealed class NutProtocolTests
     }
 
     [Fact]
+    public void ReadsTheBatteryAndOutputDetailsApcModbusReports()
+    {
+        // As orion's Smart-UPS 1000 reports them through apc_modbus.
+        var reading = NutProtocol.ToReading("apc", Variables(
+            ("battery.temperature", "34.19"),
+            ("battery.date", "2026-08-15"),
+            ("input.transfer.reason", "AcceptableInput"),
+            ("output.frequency", "49.97"),
+            ("output.current", "0.81"),
+            ("battery.runtime.low", "600"),
+            ("battery.charge.low", "30"),
+            ("ups.status", "OL HE")), "t");
+
+        Assert.Equal(34.19, reading.BatteryTemperature);
+        Assert.Equal("2026-08-15", reading.BatteryDate);
+        Assert.Equal("AcceptableInput", reading.TransferReason);
+        Assert.Equal(49.97, reading.OutputFrequency);
+        Assert.Equal(0.81, reading.OutputCurrent);
+
+        // The thresholds NUT raises LB at itself, with ignorelb: orion's ups.conf overrides.
+        Assert.Equal(600, reading.LowBatteryRuntimeSeconds);
+        Assert.Equal(30, reading.LowBatteryCharge);
+
+        // Not a variable: the client asks for it separately.
+        Assert.Null(reading.Monitors);
+    }
+
+    [Theory]
+    [InlineData("NUMLOGINS apc 1", 1)]
+    [InlineData("NUMLOGINS apc 0", 0)]
+    [InlineData("NUMLOGINS other 1", null)] // Another UPS's count is not this one's.
+    [InlineData("ERR ACCESS-DENIED", null)]
+    [InlineData("NUMLOGINS apc -1", null)]
+    [InlineData("NUMLOGINS apc", null)]
+    public void ReadsTheMonitorCountAndNothingElseAsOne(string line, int? expected)
+    {
+        Assert.Equal(expected, NutProtocol.ParseNumLogins(line, "apc"));
+    }
+
+    [Fact]
     public void PrefersRealPowerWhenReportedAndTreatsUnparseableValuesAsAbsent()
     {
         var reading = NutProtocol.ToReading("apc", Variables(

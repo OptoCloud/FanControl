@@ -52,10 +52,20 @@ public sealed class CoreContractTests
         InputVoltage = 231.4,
         OutputVoltage = 230.5,
         BatteryVoltage = 27.3,
+        BatteryTemperature = 34.5,
+        BatteryDate = "2026-08-15",
+        LowBatteryRuntimeSeconds = 600.5,
+        LowBatteryCharge = 30.5,
+        TransferReason = "LowInputVoltage",
+        OutputFrequency = 49.97,
+        OutputCurrent = 0.81,
+        Monitors = 1,
         Variables = new SortedDictionary<string, string>(StringComparer.Ordinal) { ["ups.status"] = "OL" },
     };
 
-    private static readonly UpsState Ups = new() { Enabled = true, Name = "apc", Reading = Reading, Error = "upsd: DATA-STALE" };
+    private static readonly UpsLimits Limits = new() { HostShutdownSeconds = 84.5, BatteryTemperatureWarn = 40.5 };
+
+    private static readonly UpsState Ups = new() { Enabled = true, Name = "apc", Reading = Reading, Error = "upsd: DATA-STALE", Limits = Limits };
 
     private static readonly DriveState Drive = new()
     {
@@ -104,6 +114,7 @@ public sealed class CoreContractTests
         ["types"] = new JsonObject
         {
             [nameof(UpsReading)] = Node(Reading),
+            [nameof(UpsLimits)] = Node(Limits),
             [nameof(UpsState)] = Node(Ups),
             [nameof(DriveState)] = Node(Drive),
             [nameof(EventRecord)] = Node(Event),

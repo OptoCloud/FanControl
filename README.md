@@ -466,7 +466,9 @@ they happened.
 - It keeps the one connection to `vigild`'s socket and one to NUT's `upsd`
   over TCP, polling `LIST VAR` every 5s like `upsmon`. Reads on upsd are
   anonymous, so it needs no NUT account. It only watches: `upsmon` on the
-  host still owns the shutdown.
+  host still owns the shutdown. It also asks upsd how many monitors are
+  logged in (`GET NUMLOGINS`, anonymous too), because zero means a dead
+  `upsmon` and nothing to shut the host down on a power cut.
 - It writes history to Postgres with the TimescaleDB extension, and owns the
   schema: tables, hypertables, continuous aggregates and policies are applied
   idempotently each time it connects ([ADR-007](docs/DECISIONS.md)). It only
@@ -484,8 +486,13 @@ they happened.
 - It owns alerting: stalled fans, fans not under `vigild`'s control,
   unreadable or vanished sensors, SMART changes, `vigild` outages, and the UPS
   on battery, low, in forced shutdown, needing a battery, overloaded or not
-  protecting. A condition must hold for three polls before it is raised and
-  be gone for three before it clears; UPS power events count on the first.
+  protecting; no `upsmon` watching it for 30s; a battery at or over
+  `UPS_BATTERY_TEMPERATURE_WARN` (cleared 2 °C under it); and a
+  `battery.runtime.low` shorter than `HOST_SHUTDOWN_SECONDS`, when the
+  shutdown would not finish before the battery does. A condition must hold
+  for three polls before it is raised and be gone for three before it clears;
+  UPS power events count on the first. While the UPS is unreadable its raised
+  conditions are held, not cleared: not knowing is not "back to normal".
   Events go to Postgres and, optionally, ntfy over HTTPS.
 - Without a database the live view still works, and it retries the database
   every 15 seconds.
@@ -516,6 +523,8 @@ before it starts, with every problem listed:
 | `NUT_PORT` | `3493` | |
 | `NUT_UPS` | `apc` | the UPS's name on upsd |
 | `NUT_POLL_SECONDS` | `5` | |
+| `HOST_SHUTDOWN_SECONDS` | | how long the host takes to shut down, guests included; unset shows no shutdown margin |
+| `UPS_BATTERY_TEMPERATURE_WARN` | `40` | °C at which the UPS battery is too hot |
 | `NTFY_URL` | | an ntfy topic URL; unset sends no notifications |
 | `CORE_HOST` | `0.0.0.0` | the one address it listens on; an IP address or `localhost` |
 | `CORE_PORT` | `3001` | the production template sets `3000` |

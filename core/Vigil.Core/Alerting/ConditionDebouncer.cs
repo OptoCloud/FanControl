@@ -21,6 +21,9 @@ public sealed class ConditionDebouncer(uint threshold)
     /// <summary>Raised conditions, with how many consecutive updates each has been absent for.</summary>
     private readonly SortedDictionary<string, (Condition Condition, uint AbsentFor)> _raised = new(StringComparer.Ordinal);
 
+    /// <summary>Whether <paramref name="kind"/> is raised: a condition with hysteresis needs to know.</summary>
+    public bool IsRaised(string kind) => _raised.ContainsKey(kind);
+
     /// <summary>Feeds one update's conditions in; returns what was raised, then what cleared.</summary>
     /// <param name="conditions">Every condition this update saw hold.</param>
     /// <param name="isComplete">

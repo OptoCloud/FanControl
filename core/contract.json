@@ -22,9 +22,21 @@
       "inputVoltage": 231.4,
       "outputVoltage": 230.5,
       "batteryVoltage": 27.3,
+      "batteryTemperature": 34.5,
+      "batteryDate": "2026-08-15",
+      "lowBatteryRuntimeSeconds": 600.5,
+      "lowBatteryCharge": 30.5,
+      "transferReason": "LowInputVoltage",
+      "outputFrequency": 49.97,
+      "outputCurrent": 0.81,
+      "monitors": 1,
       "variables": {
         "ups.status": "OL"
       }
+    },
+    "UpsLimits": {
+      "hostShutdownSeconds": 84.5,
+      "batteryTemperatureWarn": 40.5
     },
     "UpsState": {
       "enabled": true,
@@ -43,11 +55,23 @@
         "inputVoltage": 231.4,
         "outputVoltage": 230.5,
         "batteryVoltage": 27.3,
+        "batteryTemperature": 34.5,
+        "batteryDate": "2026-08-15",
+        "lowBatteryRuntimeSeconds": 600.5,
+        "lowBatteryCharge": 30.5,
+        "transferReason": "LowInputVoltage",
+        "outputFrequency": 49.97,
+        "outputCurrent": 0.81,
+        "monitors": 1,
         "variables": {
           "ups.status": "OL"
         }
       },
-      "error": "upsd: DATA-STALE"
+      "error": "upsd: DATA-STALE",
+      "limits": {
+        "hostShutdownSeconds": 84.5,
+        "batteryTemperatureWarn": 40.5
+      }
     },
     "DriveState": {
       "wwn": "naa.5000c500bae40598",
@@ -156,11 +180,23 @@
           "inputVoltage": 231.4,
           "outputVoltage": 230.5,
           "batteryVoltage": 27.3,
+          "batteryTemperature": 34.5,
+          "batteryDate": "2026-08-15",
+          "lowBatteryRuntimeSeconds": 600.5,
+          "lowBatteryCharge": 30.5,
+          "transferReason": "LowInputVoltage",
+          "outputFrequency": 49.97,
+          "outputCurrent": 0.81,
+          "monitors": 1,
           "variables": {
             "ups.status": "OL"
           }
         },
-        "error": "upsd: DATA-STALE"
+        "error": "upsd: DATA-STALE",
+        "limits": {
+          "hostShutdownSeconds": 84.5,
+          "batteryTemperatureWarn": 40.5
+        }
       }
     }
   }

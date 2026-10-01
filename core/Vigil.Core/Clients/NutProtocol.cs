@@ -122,8 +122,36 @@ public static partial class NutProtocol
             InputVoltage = Number(variables, "input.voltage"),
             OutputVoltage = Number(variables, "output.voltage"),
             BatteryVoltage = Number(variables, "battery.voltage"),
+            BatteryTemperature = Number(variables, "battery.temperature"),
+            BatteryDate = Lookup(variables, "battery.date")?.Trim(),
+            LowBatteryRuntimeSeconds = Number(variables, "battery.runtime.low"),
+            LowBatteryCharge = Number(variables, "battery.charge.low"),
+            TransferReason = Lookup(variables, "input.transfer.reason")?.Trim(),
+            OutputFrequency = Number(variables, "output.frequency"),
+            OutputCurrent = Number(variables, "output.current"),
+
+            // Not a variable: NutClient asks for it separately, after the list.
+            Monitors = null,
             Variables = variables,
         };
+    }
+
+    /// <summary>
+    /// The monitor count in upsd's answer to <c>GET NUMLOGINS &lt;ups&gt;</c>, which is
+    /// <c>NUMLOGINS &lt;ups&gt; &lt;count&gt;</c>. Null for anything else: an ERR (an upsd that
+    /// wants a login first, or predates the command) leaves the count unknown, not zero, since
+    /// zero raises an alert.
+    /// </summary>
+    public static int? ParseNumLogins(string line, string ups)
+    {
+        ArgumentNullException.ThrowIfNull(line);
+
+        var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return parts is ["NUMLOGINS", var name, var count]
+            && name == ups
+            && int.TryParse(count, NumberStyles.None, CultureInfo.InvariantCulture, out var monitors)
+            ? monitors
+            : null;
     }
 
     /// <summary>

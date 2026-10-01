@@ -235,6 +235,16 @@ internal static class NutProtocolTestsSupport
         InputVoltage = 231.4,
         OutputVoltage = 230,
         BatteryVoltage = null,
+
+        // None of these is stored: history keeps the metrics its rollups were built over.
+        BatteryTemperature = 34.2,
+        BatteryDate = "2026-08-15",
+        LowBatteryRuntimeSeconds = 600,
+        LowBatteryCharge = 30,
+        TransferReason = "AcceptableInput",
+        OutputFrequency = 49.97,
+        OutputCurrent = 0.81,
+        Monitors = 1,
         Variables = new SortedDictionary<string, string>(StringComparer.Ordinal) { ["ups.status"] = "OL CHRG" },
     };
 }
