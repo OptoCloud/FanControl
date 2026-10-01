@@ -13,9 +13,32 @@ public static class UpsConditions
     public static readonly TimeSpan UnreadableGrace = TimeSpan.FromSeconds(30);
 
     /// <summary>
-    /// Every problem visible in <paramref name="ups"/>. <paramref name="unreadableFor"/> is how
-    /// long there has been no reading. Nothing, ever, when NUT is not configured.
+    /// The <c>ups.status</c> flags that say where the load's power comes from. Every other flag
+    /// (CHRG, RB, ALARM, a driver's state mid-transfer) qualifies one of these, so a status
+    /// without any of them says nothing about the mains.
     /// </summary>
+    private static readonly string[] PowerSourceFlags = ["OL", "OB", "BYPASS", "OFF"];
+
+    /// <summary>
+    /// Whether <paramref name="reading"/> says where the power comes from. One that does not is
+    /// treated like no reading at all: read as "not OB", it would clear a running on-battery
+    /// alert and announce that mains power was back, about a UPS that said nothing of the sort.
+    /// </summary>
+    public static bool NamesPowerSource(UpsReading reading)
+    {
+        ArgumentNullException.ThrowIfNull(reading);
+        return reading.Status.Any(flag => PowerSourceFlags.Contains(flag, StringComparer.Ordinal));
+    }
+
+    /// <summary>
+    /// Every problem visible in <paramref name="ups"/>. <paramref name="unreadableFor"/> is how
+    /// long there has been no reading that names a power source. Nothing, ever, when NUT is not
+    /// configured.
+    /// </summary>
+    /// <remarks>
+    /// Without such a reading only <c>ups-unreadable</c> can be judged. Feed the result to the
+    /// debouncer as incomplete then, so the power conditions already raised stay raised.
+    /// </remarks>
     public static Conditions Of(UpsState ups, TimeSpan unreadableFor)
     {
         var conditions = new Conditions();
@@ -24,13 +47,13 @@ public static class UpsConditions
             return conditions;
         }
 
-        if (ups.Reading is not { } reading)
+        if (ups.Reading is not { } reading || !NamesPowerSource(reading))
         {
             if (unreadableFor >= UnreadableGrace)
             {
                 conditions["ups-unreadable"] = new Condition(
                     Severity.Warning,
-                    $"The UPS can't be read ({ups.Error ?? "no reason given"}). A power cut would not show up here; orion's own upsmon is unaffected.",
+                    $"The UPS can't be read ({WhyUnreadable(ups)}). A power cut would not show up here; orion's own upsmon is unaffected.",
                     "The UPS is readable again.");
             }
 
@@ -93,6 +116,13 @@ public static class UpsConditions
 
         return conditions;
     }
+
+    private static string WhyUnreadable(UpsState ups) => ups.Reading switch
+    {
+        null => ups.Error ?? "no reason given",
+        { Status.Count: 0 } => "upsd reports no ups.status",
+        { Status: var status } => $"upsd reports ups.status \"{string.Join(' ', status)}\", which names no power source",
+    };
 
     /// <summary>
     /// Rounded away from zero, as Rust's <c>f64::round</c> is. .NET's default is banker's

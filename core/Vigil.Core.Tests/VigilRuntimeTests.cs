@@ -248,4 +248,37 @@ public sealed class VigilRuntimeTests
         await runtime.TickAsync(CancellationToken.None);
         Assert.Contains(Drain(subscriber), json => json.Contains("ups-unreadable", StringComparison.Ordinal));
     }
+
+    private static RuntimeInput.Ups UpsRead(params string[] status) =>
+        new(new UpsPoll.Read(UpsConditionsTests.Ups(status, 40.0, 600.0).Reading!)); // Ups() always sets a reading.
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("CHRG")]
+    public async Task LosingTheUpsMidOutageNeverAnnouncesThatMainsIsBack(string? unusableStatus)
+    {
+        // A failed poll, or a reading that names no power source, says nothing about the mains.
+        // Read as "not on battery", it once sent "Mains power is back" in the middle of an outage.
+        var runtime = Runtime(nutHost: "10.0.0.4");
+        var subscriber = await Subscribe(runtime);
+
+        await runtime.HandleAsync(UpsRead("OB", "LB"), CancellationToken.None);
+        Assert.Contains(Drain(subscriber), json => json.Contains("Mains power lost", StringComparison.Ordinal));
+
+        var unusable = unusableStatus is null ? new RuntimeInput.Ups(new UpsPoll.Failed("upsd: DATA-STALE")) : UpsRead(unusableStatus);
+        await runtime.HandleAsync(unusable, CancellationToken.None);
+        _time.Advance(TimeSpan.FromSeconds(30));
+        await runtime.TickAsync(CancellationToken.None);
+
+        var whileUnreadable = Drain(subscriber);
+        Assert.Contains(whileUnreadable, json => json.Contains("ups-unreadable", StringComparison.Ordinal));
+        Assert.DoesNotContain(whileUnreadable, json => json.Contains("Mains power is back", StringComparison.Ordinal));
+        Assert.DoesNotContain(whileUnreadable, json => json.Contains("no longer low", StringComparison.Ordinal));
+
+        // Only a reading that says so clears it.
+        await runtime.HandleAsync(UpsRead("OL", "CHRG"), CancellationToken.None);
+        var afterwards = Drain(subscriber);
+        Assert.Contains(afterwards, json => json.Contains("Mains power is back", StringComparison.Ordinal));
+        Assert.Contains(afterwards, json => json.Contains("The UPS is readable again.", StringComparison.Ordinal));
+    }
 }

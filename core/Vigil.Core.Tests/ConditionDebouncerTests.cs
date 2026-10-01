@@ -73,4 +73,24 @@ public sealed class ConditionDebouncerTests
         var cleared = Assert.Single(debouncer.Update(UpsConditions.Of(UpsConditionsTests.Ups(["OL"], null, null), TimeSpan.Zero)));
         Assert.Equal("Mains power is back: the UPS is online again.", cleared.Message);
     }
+
+    [Fact]
+    public void AnIncompleteUpdateNeitherClearsNorResetsWhatItCouldNotSee()
+    {
+        var debouncer = new ConditionDebouncer(2);
+        var gpu = With("gpu", Severity.Warning, "w", "c");
+        var fan = With("fan", Severity.Warning, "f", "f-c");
+
+        Assert.Empty(debouncer.Update(gpu));
+        Assert.Single(debouncer.Update(gpu));
+        Assert.Empty(debouncer.Update(fan));
+
+        // Neither raised "gpu" nor pending "fan" was seen, and neither is gone: unknown is not absent.
+        Assert.Empty(debouncer.Update(new Conditions(), isComplete: false));
+        Assert.Empty(debouncer.Update(new Conditions(), isComplete: false));
+
+        // Both kept their counts across them: one more sighting raises "fan", and one more real
+        // absence is the second "gpu" needs to clear.
+        Assert.Equal(["f", "c"], debouncer.Update(fan).Select(newEvent => newEvent.Message));
+    }
 }

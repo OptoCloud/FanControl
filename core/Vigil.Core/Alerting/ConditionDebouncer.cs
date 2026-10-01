@@ -22,7 +22,14 @@ public sealed class ConditionDebouncer(uint threshold)
     private readonly SortedDictionary<string, (Condition Condition, uint AbsentFor)> _raised = new(StringComparer.Ordinal);
 
     /// <summary>Feeds one update's conditions in; returns what was raised, then what cleared.</summary>
-    public List<NewEvent> Update(Conditions conditions)
+    /// <param name="conditions">Every condition this update saw hold.</param>
+    /// <param name="isComplete">
+    /// False when the update could not judge every condition, because its source was unreadable.
+    /// A condition it did not see is then unknown rather than gone: raised ones stay raised and
+    /// pending ones keep their count. Without this, one failed UPS poll mid-outage would clear
+    /// "on battery" and announce that mains power was back.
+    /// </param>
+    public List<NewEvent> Update(Conditions conditions, bool isComplete = true)
     {
         var events = new List<NewEvent>();
 
@@ -45,6 +52,11 @@ public sealed class ConditionDebouncer(uint threshold)
             {
                 _pending[kind] = seen;
             }
+        }
+
+        if (!isComplete)
+        {
+            return events;
         }
 
         // A condition must hold for consecutive updates; one gap starts the count again.

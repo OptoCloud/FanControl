@@ -153,7 +153,7 @@ public sealed class VigilRuntime
         }
 
         // The unreadable-UPS condition depends on time, not only on the next poll.
-        if (_ups is { Enabled: true, Reading: null })
+        if (_ups.Enabled && _upsUnreadableSince is not null)
         {
             await EvaluateUpsAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -278,7 +278,9 @@ public sealed class VigilRuntime
                     _logger.LogInformation("reading the UPS: {Status}", string.Join(' ', reading.Status));
                 }
 
-                _upsUnreadableSince = null;
+                // A reading that names no power source is kept for the dashboard, but for alerting
+                // it is no reading at all, and the time without one keeps counting.
+                _upsUnreadableSince = UpsConditions.NamesPowerSource(reading) ? null : _upsUnreadableSince ?? _time.GetTimestamp();
                 _ups = _ups with { Reading = reading, Error = null };
 
                 if (_database.IsReady && IsDue(_lastUpsPersisted, _persistInterval))
@@ -296,10 +298,7 @@ public sealed class VigilRuntime
                     _logger.LogWarning("cannot read the UPS: {Error}", error);
                 }
 
-                if (_ups.Reading is not null || _upsUnreadableSince is null)
-                {
-                    _upsUnreadableSince = _time.GetTimestamp();
-                }
+                _upsUnreadableSince ??= _time.GetTimestamp();
 
                 _ups = _ups with { Reading = null, Error = error };
                 break;
@@ -312,7 +311,11 @@ public sealed class VigilRuntime
     private async Task EvaluateUpsAsync(CancellationToken cancellationToken)
     {
         var unreadableFor = _upsUnreadableSince is { } since ? _time.GetElapsedTime(since) : TimeSpan.Zero;
-        foreach (var newEvent in _upsDebouncer.Update(UpsConditions.Of(_ups, unreadableFor)))
+
+        // Unreadable, the UPS's power state is unknown, not back to normal: the conditions raised
+        // before stay raised until a reading says otherwise.
+        var conditions = UpsConditions.Of(_ups, unreadableFor);
+        foreach (var newEvent in _upsDebouncer.Update(conditions, isComplete: _upsUnreadableSince is null))
         {
             await RaiseAsync(newEvent, cancellationToken).ConfigureAwait(false);
         }

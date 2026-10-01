@@ -71,4 +71,28 @@ public sealed class UpsConditionsTests
         Assert.Equal("The UPS is off: the load is not protected.", conditions["ups-not-protecting"].Message);
         Assert.Equal("The UPS is overloaded (25% load).", conditions["ups-overload"].Message);
     }
+
+    [Theory]
+    [InlineData(new string[0], "upsd reports no ups.status")]
+    [InlineData(new[] { "CHRG" }, "upsd reports ups.status \"CHRG\", which names no power source")]
+    [InlineData(new[] { "ALARM", "RB" }, "upsd reports ups.status \"ALARM RB\", which names no power source")]
+    public void AStatusThatNamesNoPowerSourceIsUnreadableRatherThanOnMains(string[] status, string why)
+    {
+        var ups = Ups(status, 100.0, 2000.0);
+
+        Assert.Empty(UpsConditions.Of(ups, TimeSpan.FromSeconds(10)));
+        var unreadable = Assert.Single(UpsConditions.Of(ups, TimeSpan.FromSeconds(30)));
+        Assert.Equal("ups-unreadable", unreadable.Key);
+        Assert.Contains(why, unreadable.Value.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("OL")]
+    [InlineData("OB")]
+    [InlineData("BYPASS")]
+    [InlineData("OFF")]
+    public void EachPowerSourceFlagMakesAReadingUsable(string flag)
+    {
+        Assert.True(UpsConditions.NamesPowerSource(Ups([flag, "CHRG"], null, null).Reading!)); // Ups() always sets one.
+    }
 }
