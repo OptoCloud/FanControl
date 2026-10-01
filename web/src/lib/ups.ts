@@ -23,6 +23,14 @@ export function summarizeUps(ups: UpsState): UpsSummary {
 		return { level: 'critical', label: 'Battery low', banner: `UPS battery low${charge}. orion shuts itself down on this.` };
 	if (flags.has('OB'))
 		return { level: 'warning', label: 'On battery', banner: `Mains power lost: running on the UPS battery${charge}${runtime}.` };
+	// Below the power events, which say more while they last; above everything else, because on
+	// mains this is the one problem that would cost the pool at the next power cut.
+	if (reading.monitors === 0)
+		return {
+			level: 'critical',
+			label: 'No shutdown guard',
+			banner: 'No upsmon is logged in to the UPS: nothing will shut orion down when the battery runs low.'
+		};
 	if (flags.has('OFF')) return { level: 'warning', label: 'Off' };
 	if (flags.has('BYPASS')) return { level: 'warning', label: 'On bypass' };
 	if (flags.has('OVER')) return { level: 'warning', label: 'Overloaded' };

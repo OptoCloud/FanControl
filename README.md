@@ -486,7 +486,7 @@ they happened.
 - It owns alerting: stalled fans, fans not under `vigild`'s control,
   unreadable or vanished sensors, SMART changes, `vigild` outages, and the UPS
   on battery, low, in forced shutdown, needing a battery, overloaded or not
-  protecting; no `upsmon` watching it for 30s; a battery at or over
+  protecting; no `upsmon` watching it for a minute; a battery at or over
   `UPS_BATTERY_TEMPERATURE_WARN` (cleared 2 °C under it); and a
   `battery.runtime.low` shorter than `HOST_SHUTDOWN_SECONDS`, when the
   shutdown would not finish before the battery does. A condition must hold

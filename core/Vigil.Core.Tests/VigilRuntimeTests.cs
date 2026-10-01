@@ -262,7 +262,10 @@ public sealed class VigilRuntimeTests
         await runtime.HandleAsync(UpsRead(monitors: 1, "OL"), CancellationToken.None);
         Drain(subscriber);
 
+        // Half a minute without one is a upsmon restarting, not yet a dead one.
         await runtime.HandleAsync(UpsRead(monitors: 0, "OL"), CancellationToken.None);
+        _time.Advance(TimeSpan.FromSeconds(30));
+        await runtime.TickAsync(CancellationToken.None);
         Assert.DoesNotContain(Drain(subscriber), json => json.Contains("ups-unguarded", StringComparison.Ordinal));
 
         // No further poll needed: the tick notices that the gap has lasted.

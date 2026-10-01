@@ -1,13 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { UpsLimits, UpsState } from './types';
-import { describeTransferReason, formatDuration, guardVerdict, marginVerdict, shutdownMargin } from './ups';
+import { describeTransferReason, formatDuration, guardVerdict, marginVerdict, shutdownMargin, summarizeUps } from './ups';
 
 interface Setup {
 	lowBatteryRuntime?: number;
 	hostShutdown?: number;
+	monitors?: number | null;
+	status?: string[];
 }
 
-function ups({ lowBatteryRuntime, hostShutdown }: Setup, runtime: number | null = 2640): UpsState {
+function ups({ lowBatteryRuntime, hostShutdown, monitors = 1, status = ['OL'] }: Setup, runtime: number | null = 2640): UpsState {
 	const limits: UpsLimits = { hostShutdownSeconds: hostShutdown ?? null, batteryTemperatureWarn: 40 };
 	return {
 		enabled: true,
@@ -18,7 +20,7 @@ function ups({ lowBatteryRuntime, hostShutdown }: Setup, runtime: number | null 
 			timestampUtc: 't',
 			name: 'apc',
 			model: null,
-			status: ['OL'],
+			status,
 			batteryCharge: 100,
 			batteryRuntimeSeconds: runtime,
 			load: 26,
@@ -33,7 +35,7 @@ function ups({ lowBatteryRuntime, hostShutdown }: Setup, runtime: number | null 
 			transferReason: null,
 			outputFrequency: null,
 			outputCurrent: null,
-			monitors: 1,
+			monitors,
 			variables: {}
 		}
 	};
@@ -91,5 +93,19 @@ describe('formatDuration', () => {
 		expect(formatDuration(150)).toBe('2 min 30 s');
 		expect(formatDuration(180)).toBe('3 min');
 		expect(formatDuration(600)).toBe('10 min');
+	});
+});
+
+describe('summarizeUps', () => {
+	it('is critical when nothing would shut orion down', () => {
+		expect(summarizeUps(ups({ monitors: 0 }))).toMatchObject({ level: 'critical', label: 'No shutdown guard' });
+	});
+
+	it('still leads with a power event while there is one', () => {
+		expect(summarizeUps(ups({ monitors: 0, status: ['OB'] })).label).toBe('On battery');
+	});
+
+	it('does not read an unknown count as none', () => {
+		expect(summarizeUps(ups({ monitors: null })).label).toBe('Online');
 	});
 });

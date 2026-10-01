@@ -119,10 +119,10 @@ public sealed class UpsConditionsTests
     {
         var unguarded = Ups(["OL"], 100.0, 2000.0, monitors: 0);
 
-        // An upsd restart drops upsmon for a poll or two; that is not a dead upsmon yet.
-        Assert.Empty(UpsConditions.Of(unguarded, Fresh with { UnguardedFor = TimeSpan.FromSeconds(10) }));
+        // Restarting upsmon or upsd logs it out for a moment; that is not a dead upsmon yet.
+        Assert.Empty(UpsConditions.Of(unguarded, Fresh with { UnguardedFor = TimeSpan.FromSeconds(59) }));
 
-        var condition = UpsConditions.Of(unguarded, Fresh with { UnguardedFor = TimeSpan.FromSeconds(30) })["ups-unguarded"];
+        var condition = UpsConditions.Of(unguarded, Fresh with { UnguardedFor = TimeSpan.FromSeconds(60) })["ups-unguarded"];
         Assert.Equal(Severity.Critical, condition.Severity);
         Assert.Contains("no upsmon is logged in", condition.Message, StringComparison.Ordinal);
     }

@@ -19,11 +19,11 @@ public static class UpsConditions
     public static readonly TimeSpan UnreadableGrace = TimeSpan.FromSeconds(30);
 
     /// <summary>
-    /// How long upsd may report no monitor before that is a problem. upsmon logs back in within
-    /// its POLLFREQ (5s by default) of an upsd restart, so a gap past this is a upsmon that is
-    /// not coming back.
+    /// How long upsd may report no monitor before that is a problem. Restarting upsmon, or upsd,
+    /// logs it out for a moment, and UPS conditions are raised on the first poll; a zero that
+    /// lasts a minute is a upsmon that is not coming back.
     /// </summary>
-    public static readonly TimeSpan UnguardedGrace = TimeSpan.FromSeconds(30);
+    public static readonly TimeSpan UnguardedGrace = TimeSpan.FromSeconds(60);
 
     /// <summary>
     /// How far below the limit a hot battery has to cool before the alert clears, so a battery
