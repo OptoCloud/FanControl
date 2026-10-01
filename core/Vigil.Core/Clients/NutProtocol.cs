@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.RegularExpressions;
 using Vigil.Core.Protocol;
 
 namespace Vigil.Core.Clients;
@@ -7,8 +8,24 @@ namespace Vigil.Core.Clients;
 /// The pure half of the NUT client: parsing a <c>LIST VAR</c> answer and turning it into a
 /// reading. No I/O, so all of it is unit-tested, as the Rust version is.
 /// </summary>
-public static class NutProtocol
+public static partial class NutProtocol
 {
+    /// <summary>
+    /// What a credential's value reads as. Masked rather than dropped: that a driver carries one
+    /// at all is worth seeing, and a missing variable would read as a driver that has none.
+    /// </summary>
+    public const string Masked = "(masked)";
+
+    /// <summary>
+    /// Variable names that hold a credential. upsd publishes each driver's configuration as
+    /// <c>driver.parameter.&lt;name&gt;</c>, which for snmp-ups is its community or SNMPv3
+    /// passwords and for the network drivers a login password, and the whole map is served to
+    /// the LAN with no authentication (docs/SECURITY.md §2, §7). "pass" spares "bypass": the
+    /// <c>input.bypass.*</c> variables are mains readings.
+    /// </summary>
+    [GeneratedRegex("(?<!by)pass|secret|token|community|authkey|privkey|apikey", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex CredentialName();
+
     /// <summary>
     /// The variables in a <c>LIST VAR</c> answer: lines of <c>VAR &lt;ups&gt; &lt;name&gt;
     /// "&lt;value&gt;"</c>, where the value escapes <c>"</c> and <c>\</c> with a backslash.
@@ -43,7 +60,8 @@ public static class NutProtocol
                 continue;
             }
 
-            variables[parts[1]] = Unescape(quoted[1..^1]);
+            // Masked here, where the value enters the process, so nothing downstream can serve it.
+            variables[parts[1]] = CredentialName().IsMatch(parts[1]) ? Masked : Unescape(quoted[1..^1]);
         }
 
         return variables;

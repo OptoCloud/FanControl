@@ -228,6 +228,10 @@ with no `sql-literal-ok:` reason, and checks the statement timeout is set.
   an error message, never in an HTTP response, and never committed. `PostgresUri` redacts them
   from its own errors.
 - A private ntfy topic's name is its only secret, so `NTFY_URL` is treated the same way.
+- upsd publishes each driver's configuration as `driver.parameter.*`, credentials included
+  (snmp-ups's community and SNMPv3 passwords, the network drivers' logins), and the dashboard
+  shows every variable. `NutProtocol` masks them as they are parsed, so nothing downstream can
+  serve one; `NutProtocolTests` pins which names count.
 - Secrets reach a process only through its systemd `EnvironmentFile`, `/etc/vigil-core.env`,
   which is `0640 root:vigil` and lives outside the repo.
 - `.env.example` files hold placeholders and nothing real. `.env` is gitignored in `core/`.

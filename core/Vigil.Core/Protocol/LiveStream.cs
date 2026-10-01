@@ -9,7 +9,7 @@ namespace Vigil.Core.Protocol;
 /// <summary>
 /// One poll of a UPS's variables (<c>LIST VAR &lt;ups&gt;</c> on upsd). The named fields are the
 /// handful vigil charts and alerts on; <see cref="Variables"/> is everything upsd reported,
-/// verbatim. Any of them is null when this UPS or driver does not provide it.
+/// verbatim but for credentials, which <c>NutProtocol</c> masks. Any of them is null when this UPS or driver does not provide it.
 /// </summary>
 public sealed record UpsReading
 {

@@ -137,4 +137,25 @@ public sealed class NutProtocolTests
         Assert.Empty(reading.Status);
         Assert.Empty(reading.Variables);
     }
+
+    [Fact]
+    public void MasksEveryCredentialADriverPublishesButNotTheBypassReadings()
+    {
+        // What upsd publishes for an snmp-ups driver: its configuration, passwords included.
+        var variables = Variables(
+            ("driver.parameter.community", "private"),
+            ("driver.parameter.authPassword", "hunter22"),
+            ("driver.parameter.privPassword", "hunter23"),
+            ("driver.parameter.secName", "vigil"),
+            ("driver.parameter.apikey", "k"),
+            ("input.bypass.voltage", "231.0"),
+            ("ups.status", "OL"));
+
+        Assert.Equal(NutProtocol.Masked, variables["driver.parameter.community"]);
+        Assert.Equal(NutProtocol.Masked, variables["driver.parameter.authPassword"]);
+        Assert.Equal(NutProtocol.Masked, variables["driver.parameter.privPassword"]);
+        Assert.Equal(NutProtocol.Masked, variables["driver.parameter.apikey"]);
+        Assert.Equal("vigil", variables["driver.parameter.secName"]);
+        Assert.Equal("231.0", variables["input.bypass.voltage"]);
+    }
 }
